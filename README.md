@@ -1,6 +1,6 @@
 # 🤖 Reddit MCP Server (AI-Native Edition)
 
-[![CI Status](https://github.com/yourusername/reddit-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/reddit-mcp-server/actions)
+[![CI Status](https://github.com/ismailsaoulaj/reddit-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ismailsaoulaj/reddit-mcp-server/actions)
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -61,7 +61,7 @@ sequenceDiagram
 1. **Clone and Install:**
 
 ```bash
-git clone https://github.com/yourusername/reddit-mcp-server.git
+git clone https://github.com/ismailsaoulaj/reddit-mcp-server.git
 cd reddit-mcp-server
 pip install -e .
 ```

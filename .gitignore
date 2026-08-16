@@ -24,3 +24,5 @@ coverage.xml
 # IDEs
 .vscode/
 .idea/
+
+codebase.md
