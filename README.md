@@ -3,6 +3,7 @@
 [![CI Status](https://github.com/ismailsaoulaj/reddit-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ismailsaoulaj/reddit-mcp-server/actions)
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Zero Config](https://img.shields.io/badge/Setup-Zero_Config-success.svg)](#-prerequisites--setup)
 
 A highly resilient, open-source [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server. It empowers AI models (such as Claude and Cursor) to search, fetch, read, and deep-dive into Reddit content with robust rate-limiting recovery and smart comment-filtering.
 
@@ -12,7 +13,7 @@ Built in Python using `FastMCP`, this project adheres to a strict **4-Layer Arch
 
 ## 🗺️ How it Works (Data Flow Sequence)
 
-Here is a visual sequence diagram of how the AI model interacts with this server to retrieve Reddit insights:
+Here is a visual sequence diagram showing how the AI model interacts with this server, including our **Zero-Config Fallback** system:
 
 ```mermaid
 sequenceDiagram
@@ -20,18 +21,20 @@ sequenceDiagram
     actor AI as AI Assistant (Claude/Cursor)
     participant MCP as FastMCP Server (STDIO)
     participant Tools as Application Tools
-    participant Reddit as Reddit API (httpx)
-    participant DDG as DuckDuckGo Provider
+    participant Reddit as Reddit API (OAuth)
+    participant Fallback as DDG & Arctic Shift
 
     AI->>MCP: Request (e.g., search_knowledge)
     MCP->>Tools: Route request
-    alt Global Search (Default fallback)
-        Tools->>DDG: Execute Query
-        DDG-->>Tools: Return curated Reddit URLs
+    Tools->>Reddit: Attempt Fetch (Resilient HTTP)
+    alt Has OAuth Credentials
+        Note over Reddit,Tools: Handles 429 (Rate Limits) with Retry-After backoff!
+        Reddit-->>Tools: Return Official JSON payload
+    else Zero-Config / Missing Credentials
+        Note over Tools,Fallback: Graceful Degradation Active
+        Tools->>Fallback: Execute Search / Fetch Archive
+        Fallback-->>Tools: Return Alternative JSON payload
     end
-    Tools->>Reddit: Fetch Thread (Resilient HTTP Client)
-    Note over Reddit,Tools: Handles 429 (Rate Limits) with Retry-After backoff!
-    Reddit-->>Tools: Return JSON payload
     Tools->>Tools: Refine comments (filter bots & short noise)
     Tools-->>MCP: Map to Domain Models (Pydantic)
     MCP-->>AI: Return clean JSON-RPC Response (stdout-safe)
@@ -41,11 +44,12 @@ sequenceDiagram
 
 ## ✨ Features
 
-- 🛡️ **Fail-Fast Configuration:** Utilizes `pydantic-settings` to validate credentials at boot, preventing runtime failures.
+- 🚀 **Zero-Config Ready:** Works completely out of the box! No Reddit API keys required. If credentials are not provided, it seamlessly falls back to DuckDuckGo and the Arctic Shift archive.
+- 🛡️ **Graceful Degradation:** Intelligently switches between the official Reddit API and unauthenticated fallback providers without crashing, ensuring the LLM always gets data.
 - 📈 **Resilient HTTP Client:** Built-in exponential backoff and rate-limiting recovery. If Reddit says `429 Too Many Requests`, the server respects the `Retry-After` header and retries automatically.
-- 🔍 **Strategic Search:** Integrates a decoupled search provider system (Strategy Pattern) allowing easy addition of Google/Tavily search engines.
+- 🔍 **Strategic Search:** Integrates a decoupled search provider system (Strategy Pattern) allowing easy addition of custom search engines.
 - 🤖 **LLM-Safe Filtering:** Cleans thread payloads by dropping auto-moderators, bot notifications, and low-quality comments, saving precious LLM token costs.
-- ⏱️ **Strict LLM Timeout Protection:** Uses decorators to force safe API timeouts, returning clean graceful JSON-RPC fallbacks instead of hanging.
+- ⏱️ **Strict LLM Timeout Protection:** Uses decorators to force safe API timeouts, returning clean graceful JSON-RPC fallbacks instead of hanging the AI client.
 
 ---
 
@@ -54,7 +58,7 @@ sequenceDiagram
 ### Requirements
 
 - Python 3.11 or higher
-- Reddit API App credentials (Client ID and Client Secret)
+- Reddit API App credentials (Optional, but recommended for live trending data & better rate limits)
 
 ### Quick Start (Local Installation)
 
@@ -66,9 +70,9 @@ cd reddit-mcp-server
 pip install -e .
 ```
 
-2. **Configure your environment:**
+2. **Configure your environment (Optional):**
 
-Create a `.env` file in the root directory:
+To unlock the official Reddit API, create a `.env` file in the root directory:
 
 ```env
 REDDIT_CLIENT_ID="your_client_id_here"
@@ -141,7 +145,7 @@ pytest tests/
 npx @modelcontextprotocol/inspector hatch run reddit-mcp
 ```
 
-This will launch a web browser UI where you can invoke the `search_reddit`, `get_subreddit_trends`, and `extract_post_threads` tools directly and inspect the JSON responses.
+This will launch a web browser UI where you can invoke the `search_knowledge`, `explore_reddit_discussions`, `extract_public_opinion`, and `analyze_niche_trends` tools directly and inspect the JSON responses.
 
 ---
 
