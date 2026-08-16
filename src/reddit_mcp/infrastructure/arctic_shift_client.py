@@ -131,7 +131,9 @@ class ArcticShiftClient:
             comments.sort(key=lambda x: x.score, reverse=True)
             return RedditThread(post=post, comments=comments)
         except Exception as e:
-            raise ArcticShiftError(f"Error fetching thread from Arctic Shift: {e}") from e
+            raise ArcticShiftError(
+                f"Error fetching thread from Arctic Shift: {e}"
+            ) from e
 
     async def get_subreddit_trends(
         self, *args, **kwargs
