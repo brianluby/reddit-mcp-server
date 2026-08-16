@@ -1,0 +1,445 @@
+diff --git a/src/reddit_mcp/application/tools.py b/src/reddit_mcp/application/tools.py
+index 4dcbd72..6d3df95 100644
+--- a/src/reddit_mcp/application/tools.py
++++ b/src/reddit_mcp/application/tools.py
+@@ -5,7 +5,8 @@ from reddit_mcp.domain.models import (
+     RedditPost, RedditThread, MetaContext,
+     PaginatedPostResponse, PaginatedCommentResponse
+ )
+-from reddit_mcp.infrastructure.reddit_client import RedditClient, RedditClientError
++from reddit_mcp.infrastructure.reddit_client import RedditClient, RedditClientError, RedditAuthRequiredError
++from reddit_mcp.infrastructure.arctic_shift_client import ArcticShiftClient
+ from reddit_mcp.infrastructure.auth import RedditAuthManager
+ from reddit_mcp.infrastructure.http import ResilientHTTPClient
+ from reddit_mcp.infrastructure.search.providers.duckduckgo import DuckDuckGoSearchProvider
+@@ -16,19 +17,36 @@ logger = logging.getLogger(__name__)
+ class DependencyContainer:
+     """Simple container for lazy-loading and injecting dependencies."""
+     _reddit_client: Optional[RedditClient] = None
++    _arctic_shift_client: Optional[ArcticShiftClient] = None
++    _search_provider: Optional[DuckDuckGoSearchProvider] = None
+ 
+     @classmethod
+-    def get_reddit_client(cls) -> RedditClient:
++    def _init_dependencies(cls):
+         if cls._reddit_client is None:
+             from reddit_mcp.infrastructure.settings import get_settings
+             settings = get_settings()
+             user_agent = settings.reddit_user_agent
+             auth_manager = RedditAuthManager(user_agent=user_agent)
+             http_client = ResilientHTTPClient(auth_manager=auth_manager, user_agent=user_agent)
+-            search_provider = DuckDuckGoSearchProvider()
+-            cls._reddit_client = RedditClient(http_client=http_client, search_provider=search_provider)
++            cls._search_provider = DuckDuckGoSearchProvider()
++            cls._reddit_client = RedditClient(http_client=http_client, search_provider=cls._search_provider)
++            cls._arctic_shift_client = ArcticShiftClient(http_client=http_client)
++
++    @classmethod
++    def get_reddit_client(cls) -> RedditClient:
++        cls._init_dependencies()
+         return cls._reddit_client
+ 
++    @classmethod
++    def get_arctic_shift_client(cls) -> ArcticShiftClient:
++        cls._init_dependencies()
++        return cls._arctic_shift_client
++
++    @classmethod
++    def get_search_provider(cls) -> DuckDuckGoSearchProvider:
++        cls._init_dependencies()
++        return cls._search_provider
++
+     @classmethod
+     def override_reddit_client(cls, client: RedditClient) -> None:
+         """Used for injecting mock clients during testing."""
+@@ -48,9 +66,24 @@ async def search_knowledge(
+     """
+     logger.info(f"search_knowledge: query='{query}'")
+     client = DependencyContainer.get_reddit_client()
+-    posts, _ = await client.search(
+-        query=query, subreddit=subreddit, time_filter=time_filter, limit=limit
+-    )
++    posts = []
++    
++    try:
++        posts, _ = await client.search(
++            query=query, subreddit=subreddit, time_filter=time_filter, limit=limit
++        )
++    except RedditAuthRequiredError:
++        logger.info("OAuth missing, falling back to DDG + Arctic Shift for search_knowledge.")
++        search_provider = DependencyContainer.get_search_provider()
++        arctic_client = DependencyContainer.get_arctic_shift_client()
++        
++        search_results = await search_provider.search(
++            query=query, subreddit=subreddit, time_filter=time_filter, limit=limit
++        )
++        post_ids = [res.post_id for res in search_results if res.post_id]
++        if post_ids:
++            posts = await arctic_client.get_posts_by_ids(post_ids)
++
+     # Filter: Ensure we don't send posts with empty titles or very low quality
+     valid_posts = [p for p in posts if len(p.title) > 5]
+     
+@@ -76,9 +109,25 @@ async def explore_reddit_discussions(
+     """
+     logger.info(f"explore_reddit_discussions: keyword='{keyword}'")
+     client = DependencyContainer.get_reddit_client()
+-    posts, next_token = await client.native_reddit_search(
+-        query=keyword, subreddit=subreddit, sort=sort, time_filter=time_filter, limit=limit, after=page_token
+-    )
++    posts = []
++    next_token = None
++    
++    try:
++        posts, next_token = await client.native_reddit_search(
++            query=keyword, subreddit=subreddit, sort=sort, time_filter=time_filter, limit=limit, after=page_token
++        )
++    except RedditAuthRequiredError:
++        logger.info("OAuth missing, falling back to DDG + Arctic Shift for explore_reddit_discussions.")
++        search_provider = DependencyContainer.get_search_provider()
++        arctic_client = DependencyContainer.get_arctic_shift_client()
++        
++        search_results = await search_provider.search(
++            query=keyword, subreddit=subreddit, time_filter=time_filter, limit=limit
++        )
++        post_ids = [res.post_id for res in search_results if res.post_id]
++        if post_ids:
++            posts = await arctic_client.get_posts_by_ids(post_ids)
++
+     return PaginatedPostResponse(
+         meta_context=build_meta_context(),
+         data=posts,
+@@ -99,7 +148,12 @@ async def extract_public_opinion(
+     client = DependencyContainer.get_reddit_client()
+     
+     # Fetch thread (The client already maps basic data)
+-    thread = await client.get_post_thread(post_url=post_url, max_comments=max_comments)
++    try:
++        thread = await client.get_post_thread(post_url=post_url, max_comments=max_comments)
++    except RedditAuthRequiredError:
++        logger.info("OAuth missing, falling back to Arctic Shift for extract_public_opinion.")
++        arctic_client = DependencyContainer.get_arctic_shift_client()
++        thread = await arctic_client.get_post_thread(post_url_or_id=post_url, max_comments=max_comments)
+     
+     # Application Layer Filtering: Drop low quality before responding
+     # This saves tokens and ensures the LLM only sees valuable input.
+@@ -127,11 +181,22 @@ async def analyze_niche_trends(
+     """
+     logger.info(f"analyze_niche_trends: subreddit='{subreddit_name}'")
+     client = DependencyContainer.get_reddit_client()
+-    posts, next_token = await client.get_subreddit_trends(
+-        subreddit=subreddit_name, category=trend_type, limit=limit, after=page_token
+-    )
+-    return PaginatedPostResponse(
+-        meta_context=build_meta_context(),
+-        data=posts,
+-        next_page_token=next_token
+-    )
++    
++    try:
++        posts, next_token = await client.get_subreddit_trends(
++            subreddit=subreddit_name, category=trend_type, limit=limit, after=page_token
++        )
++        return PaginatedPostResponse(
++            meta_context=build_meta_context(),
++            data=posts,
++            next_page_token=next_token
++        )
++    except RedditAuthRequiredError:
++        logger.warning("OAuth missing. Cannot fetch fresh trending data.")
++        return PaginatedPostResponse(
++            meta_context=build_meta_context(),
++            data=[],
++            next_page_token=None,
++            status="warning",
++            message="Trending data is unavailable without OAuth credentials due to archive lag. Please use search tools instead."
++        )
+diff --git a/src/reddit_mcp/infrastructure/auth.py b/src/reddit_mcp/infrastructure/auth.py
+index ef7884b..0155b91 100644
+--- a/src/reddit_mcp/infrastructure/auth.py
++++ b/src/reddit_mcp/infrastructure/auth.py
+@@ -28,10 +28,18 @@ class RedditAuthManager:
+         self._expires_at: float = 0.0
+         self._lock = asyncio.Lock()
+ 
+-    async def get_token(self) -> str:
++    @property
++    def has_credentials(self) -> bool:
++        """Check if OAuth credentials are provided."""
++        return bool(self.client_id and self.client_secret)
++
++    async def get_token(self) -> Optional[str]:
+         """
+-        Get a valid access token, refreshing it if necessary.
++        Get a valid access token, refreshing it if necessary. Returns None if unauthenticated.
+         """
++        if not self.has_credentials:
++            return None
++
+         async with self._lock:
+             # Refresh if token is missing or expires within the next 30 seconds
+             if not self._token or time.time() >= (self._expires_at - 30):
+diff --git a/src/reddit_mcp/infrastructure/http.py b/src/reddit_mcp/infrastructure/http.py
+index a9dfd40..607786a 100644
+--- a/src/reddit_mcp/infrastructure/http.py
++++ b/src/reddit_mcp/infrastructure/http.py
+@@ -32,12 +32,11 @@ class ResilientHTTPClient:
+         Perform a GET request with automatic token injection and rate limit retries.
+         """
+         for attempt in range(max_retries):
++            headers = {"User-Agent": self.user_agent}
+             token = await self.auth_manager.get_token()
+             
+-            headers = {
+-                "Authorization": f"Bearer {token}",
+-                "User-Agent": self.user_agent,
+-            }
++            if token:
++                headers["Authorization"] = f"Bearer {token}"
+             
+             try:
+                 response = await self.client.get(url, params=params, headers=headers)
+diff --git a/src/reddit_mcp/infrastructure/reddit_client.py b/src/reddit_mcp/infrastructure/reddit_client.py
+index 7e4e79d..edf583c 100644
+--- a/src/reddit_mcp/infrastructure/reddit_client.py
++++ b/src/reddit_mcp/infrastructure/reddit_client.py
+@@ -13,6 +13,10 @@ class RedditClientError(Exception):
+     """Base exception for Reddit client errors."""
+     pass
+ 
++class RedditAuthRequiredError(RedditClientError):
++    """Raised when an operation requires OAuth credentials that are missing."""
++    pass
++
+ class RedditClient:
+     """
+     Asynchronous client for interacting with the Reddit API using a resilient HTTP client.
+@@ -74,6 +78,9 @@ class RedditClient:
+         before: Optional[str] = None
+     ) -> Tuple[List[RedditPost], Optional[str]]:
+         """Fetch trending posts from a subreddit."""
++        if not self.http_client.auth_manager.has_credentials:
++            raise RedditAuthRequiredError("OAuth credentials missing.")
++
+         subreddit = subreddit.strip()
+         if subreddit.startswith("/r/"):
+             subreddit = subreddit[3:]
+@@ -103,6 +110,9 @@ class RedditClient:
+ 
+     async def get_post_thread(self, post_url: str, max_comments: int = 50) -> RedditThread:
+         """Fetch a specific post and its top comments, parsing the comment tree."""
++        if not self.http_client.auth_manager.has_credentials:
++            raise RedditAuthRequiredError("OAuth credentials missing.")
++            
+         post_id = self._extract_post_id(post_url)
+         if not post_id:
+             raise RedditClientError("Invalid Reddit post URL provided.")
+@@ -162,6 +172,9 @@ class RedditClient:
+         after: Optional[str] = None
+     ) -> Tuple[List[RedditPost], Optional[str]]:
+         """Search using Reddit's official API. Ideal for metrics like upvote_ratio and native sorting."""
++        if not self.http_client.auth_manager.has_credentials:
++            raise RedditAuthRequiredError("OAuth credentials missing.")
++            
+         url = "https://oauth.reddit.com/search.json"
+         params = {
+             "q": query,
+@@ -203,6 +216,9 @@ class RedditClient:
+         Search Reddit using the injected SearchProvider (e.g. DDG).
+         Useful for general knowledge finding where native search fails.
+         """
++        if not self.http_client.auth_manager.has_credentials:
++            raise RedditAuthRequiredError("OAuth credentials missing.")
++            
+         try:
+             search_results = await self.search_provider.search(
+                 query=query, 
+diff --git a/src/reddit_mcp/infrastructure/settings.py b/src/reddit_mcp/infrastructure/settings.py
+index 54cd9d0..6c97c6a 100644
+--- a/src/reddit_mcp/infrastructure/settings.py
++++ b/src/reddit_mcp/infrastructure/settings.py
+@@ -7,8 +7,8 @@ class AppConfig(BaseSettings):
+     Centralized configuration for the Reddit MCP Server.
+     Validates environment variables at startup (Fail-Fast).
+     """
+-    reddit_client_id: str = Field(..., description="Reddit App Client ID")
+-    reddit_client_secret: str = Field(..., description="Reddit App Client Secret")
++    reddit_client_id: str | None = Field(default=None, description="Reddit App Client ID")
++    reddit_client_secret: str | None = Field(default=None, description="Reddit App Client Secret")
+     reddit_user_agent: str = Field(
+         default="reddit-mcp-server/0.1.0 (by /u/reddit-mcp-server-dev)", 
+         description="User-Agent string for HTTP requests"
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index 6341726..7219141 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -14,19 +14,22 @@ def auth_env(monkeypatch):
+ 
+ @pytest.mark.asyncio
+ async def test_auth_manager_missing_env():
+-    # Ensure env is clear to test the missing credentials error
++    # Ensure env is clear to test the missing credentials behavior
+     with patch.dict(os.environ, clear=True):
+         get_settings.cache_clear()
+         # Force pydantic-settings to believe the .env file does not exist
+         with patch("pathlib.Path.is_file", return_value=False):
+-            with pytest.raises(ValidationError, match="reddit_client_id"):
+-                RedditAuthManager(user_agent="test")
++            manager = RedditAuthManager(user_agent="test")
++            assert manager.has_credentials is False
++            token = await manager.get_token()
++            assert token is None
+ 
+ from unittest.mock import MagicMock
+ 
+ @pytest.mark.asyncio
+ async def test_auth_manager_success(auth_env):
+     manager = RedditAuthManager(user_agent="test")
++    assert manager.has_credentials is True
+     
+     mock_response = MagicMock()
+     mock_response.json.return_value = {"access_token": "mock_token", "expires_in": 3600}
+diff --git a/tests/test_http.py b/tests/test_http.py
+index 5f57336..c7815da 100644
+--- a/tests/test_http.py
++++ b/tests/test_http.py
+@@ -6,9 +6,28 @@ from reddit_mcp.infrastructure.auth import RedditAuthManager
+ @pytest.fixture
+ def mock_auth_manager():
+     manager = MagicMock(spec=RedditAuthManager)
++    manager.has_credentials = True
+     manager.get_token = AsyncMock(return_value="mock_token")
+     return manager
+ 
++@pytest.mark.asyncio
++async def test_http_client_no_auth(mock_auth_manager):
++    mock_auth_manager.has_credentials = False
++    mock_auth_manager.get_token = AsyncMock(return_value=None)
++    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
++    
++    mock_response = MagicMock()
++    mock_response.status_code = 200
++    mock_response.raise_for_status = MagicMock()
++    client.client.get = AsyncMock(return_value=mock_response)
++    
++    await client.get("http://test.com")
++    
++    # Verify Authorization header was NOT included
++    call_args = client.client.get.call_args[1]
++    assert "Authorization" not in call_args["headers"]
++    await client.close()
++
+ @pytest.mark.asyncio
+ async def test_http_client_success(mock_auth_manager):
+     client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+diff --git a/tests/test_reddit_client.py b/tests/test_reddit_client.py
+index f8d45df..0426429 100644
+--- a/tests/test_reddit_client.py
++++ b/tests/test_reddit_client.py
+@@ -6,6 +6,8 @@ from reddit_mcp.domain.models import RedditPost, RedditThread, RedditComment
+ @pytest.fixture
+ def mock_http_client():
+     client = MagicMock()
++    client.auth_manager = MagicMock()
++    client.auth_manager.has_credentials = True
+     client.get = AsyncMock()
+     return client
+ 
+@@ -81,4 +83,23 @@ async def test_get_post_thread_malformed_json(reddit_client, mock_http_client):
+     mock_http_client.get.return_value = mock_response
+     
+     with pytest.raises(RedditClientError, match="Unexpected response format"):
+-        await reddit_client.get_post_thread("http://reddit.com/r/test/comments/123")
+\ No newline at end of file
++        await reddit_client.get_post_thread("http://reddit.com/r/test/comments/123")
++
++from reddit_mcp.infrastructure.reddit_client import RedditAuthRequiredError
++
++@pytest.mark.asyncio
++async def test_reddit_client_auth_required_errors(reddit_client, mock_http_client):
++    # Test that operations fail fast when credentials are missing
++    mock_http_client.auth_manager.has_credentials = False
++    
++    with pytest.raises(RedditAuthRequiredError):
++        await reddit_client.get_subreddit_trends("test")
++        
++    with pytest.raises(RedditAuthRequiredError):
++        await reddit_client.get_post_thread("http://reddit.com/r/test/comments/123")
++        
++    with pytest.raises(RedditAuthRequiredError):
++        await reddit_client.native_reddit_search("query")
++        
++    with pytest.raises(RedditAuthRequiredError):
++        await reddit_client.search("query")
+\ No newline at end of file
+diff --git a/tests/test_tools.py b/tests/test_tools.py
+index 5bf5e21..ffa0890 100644
+--- a/tests/test_tools.py
++++ b/tests/test_tools.py
+@@ -34,9 +34,23 @@ def mock_reddit_client():
+     mock_client.native_reddit_search = AsyncMock()
+     mock_client.get_subreddit_trends = AsyncMock()
+     mock_client.get_post_thread = AsyncMock()
+-    DependencyContainer.override_reddit_client(mock_client)
++    
++    mock_arctic = MagicMock()
++    mock_arctic.get_posts_by_ids = AsyncMock()
++    mock_arctic.get_post_thread = AsyncMock()
++    
++    mock_search = MagicMock()
++    mock_search.search = AsyncMock()
++    
++    DependencyContainer._reddit_client = mock_client
++    DependencyContainer._arctic_shift_client = mock_arctic
++    DependencyContainer._search_provider = mock_search
++    
+     yield mock_client
++    
+     DependencyContainer._reddit_client = None
++    DependencyContainer._arctic_shift_client = None
++    DependencyContainer._search_provider = None
+ 
+ @pytest.mark.asyncio
+ async def test_search_knowledge_filters_short_titles(mock_reddit_client, sample_post):
+@@ -121,4 +135,38 @@ def test_truncate_text_util():
+     
+     # Test empty
+     assert truncate_text(None) == ""
+-    assert truncate_text("") == ""
+\ No newline at end of file
++    assert truncate_text("") == ""
++
++from reddit_mcp.infrastructure.reddit_client import RedditAuthRequiredError
++from reddit_mcp.infrastructure.search.providers.duckduckgo import RedditSearchResult
++
++@pytest.mark.asyncio
++async def test_fallback_search_knowledge(sample_post):
++    # Simulate missing OAuth credentials
++    mock_reddit = DependencyContainer.get_reddit_client()
++    mock_reddit.search.side_effect = RedditAuthRequiredError()
++    
++    # Mock DuckDuckGo returning a URL
++    mock_search = DependencyContainer.get_search_provider()
++    mock_search.search.return_value = [RedditSearchResult(url="http://reddit.com/comments/123", title="t", snippet="s")]
++    
++    # Mock Arctic Shift returning the parsed post
++    mock_arctic = DependencyContainer.get_arctic_shift_client()
++    mock_arctic.get_posts_by_ids.return_value = [sample_post]
++    
++    result = await tools.search_knowledge("query")
++    assert len(result.data) == 1
++    assert result.data[0].id == "123"
++
++@pytest.mark.asyncio
++async def test_fallback_analyze_niche_trends():
++    # Simulate missing OAuth credentials
++    mock_reddit = DependencyContainer.get_reddit_client()
++    mock_reddit.get_subreddit_trends.side_effect = RedditAuthRequiredError()
++    
++    result = await tools.analyze_niche_trends("python")
++    
++    # Trending tool should fail gracefully with a warning
++    assert result.status == "warning"
++    assert "unavailable without OAuth credentials" in result.message
++    assert len(result.data) == 0
+\ No newline at end of file

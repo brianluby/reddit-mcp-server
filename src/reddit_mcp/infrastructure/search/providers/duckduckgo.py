@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-from typing import List, Optional
 
 from ddgs import DDGS
 
@@ -9,9 +8,10 @@ from reddit_mcp.infrastructure.search.base import BaseSearchProvider, SearchResu
 
 logger = logging.getLogger(__name__)
 
+
 class RedditSearchResult(SearchResult):
     """A search result specifically parsed for Reddit URLs."""
-    
+
     @property
     def post_id(self) -> str:
         """Extract the Reddit post ID from the URL, if present."""
@@ -24,19 +24,20 @@ class RedditSearchResult(SearchResult):
         match = re.search(r"/r/([a-zA-Z0-9_]+)", self.url)
         return match.group(1) if match else ""
 
+
 class DuckDuckGoSearchProvider(BaseSearchProvider):
     """
     Asynchronous client for searching Reddit using DuckDuckGo's 'site:' operator.
     This provides a more robust search than Reddit's internal search for general queries.
     """
-    
+
     async def search(
         self,
         query: str,
-        subreddit: Optional[str] = None,
+        subreddit: str | None = None,
         time_filter: str = "all",
         limit: int = 10,
-    ) -> List[RedditSearchResult]:
+    ) -> list[RedditSearchResult]:
         """
         Searches Reddit using DuckDuckGo.
         Returns a list of RedditSearchResult objects pointing to Reddit threads.
@@ -66,22 +67,27 @@ class DuckDuckGoSearchProvider(BaseSearchProvider):
             timelimit = "y"
 
         try:
-            def _search() -> List[dict]:
+
+            def _search() -> list[dict]:
                 with DDGS() as ddgs:
-                    return list(ddgs.text(full_query, timelimit=timelimit, max_results=limit))
+                    return list(
+                        ddgs.text(full_query, timelimit=timelimit, max_results=limit)
+                    )
 
             results = await asyncio.to_thread(_search)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error during DuckDuckGo search: {e}")
             return []
 
-        urls: List[RedditSearchResult] = []
+        urls: list[RedditSearchResult] = []
         for res in results:
             url = res.get("href", "")
             if "reddit.com" in url:
-                urls.append(RedditSearchResult(
-                    url=url,
-                    title=res.get("title", ""),
-                    snippet=res.get("body", ""),
-                ))
+                urls.append(
+                    RedditSearchResult(
+                        url=url,
+                        title=res.get("title", ""),
+                        snippet=res.get("body", ""),
+                    )
+                )
         return urls
