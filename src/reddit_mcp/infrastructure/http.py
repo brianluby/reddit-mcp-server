@@ -23,10 +23,14 @@ class ResilientHTTPClient:
     third-party clients (e.g. Arctic Shift) never leaks credentials.
     """
 
+    MAX_RETRY_AFTER_SECONDS = 5
+
     def __init__(self, auth_manager: RedditAuthManager, user_agent: str):
         self.auth_manager = auth_manager
         self.user_agent = user_agent
-        self.client = httpx.AsyncClient(timeout=15.0)
+        # Budget: 2x5s requests + one wait (1s backoff or 5s capped
+        # Retry-After) = 15s worst case, 11s on the backoff path.
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(5.0))
 
     async def close(self):
         """Close the underlying HTTP client."""
@@ -38,7 +42,7 @@ class ResilientHTTPClient:
         return host == "reddit.com" or host.endswith(".reddit.com")
 
     async def get(
-        self, url: str, params: dict[str, Any] | None = None, max_retries: int = 3
+        self, url: str, params: dict[str, Any] | None = None, max_retries: int = 2
     ) -> httpx.Response:
         """
         Perform a GET request with automatic token injection and rate limit retries.
@@ -66,7 +70,14 @@ class ResilientHTTPClient:
                         and retry_after
                         and retry_after.isdigit()
                     ):
-                        wait_seconds = int(retry_after)
+                        requested = int(retry_after)
+                        wait_seconds = min(requested, self.MAX_RETRY_AFTER_SECONDS)
+                        if requested > self.MAX_RETRY_AFTER_SECONDS:
+                            logger.warning(
+                                f"Retry-After {requested}s exceeds cap of "
+                                f"{self.MAX_RETRY_AFTER_SECONDS}s; waiting "
+                                f"{wait_seconds}s instead."
+                            )
                     else:
                         # Exponential backoff for 5xx or missing Retry-After
                         wait_seconds = 2**attempt
