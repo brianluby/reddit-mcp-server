@@ -1,4 +1,3 @@
-# pyrefly: ignore [missing-import]
 import logging
 
 from fastmcp import FastMCP
