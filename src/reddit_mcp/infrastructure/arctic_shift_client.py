@@ -90,9 +90,9 @@ class ArcticShiftClient:
             for child in data.get("data", []):
                 posts.append(self._map_submission(child))
             return posts
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.error(f"Arctic Shift get_posts_by_ids error: {e}")
-            return []
+            raise ArcticShiftError(f"Arctic Shift posts fetch failed: {e}") from e
 
     async def get_post_thread(
         self, post_url_or_id: str, max_comments: int = 50

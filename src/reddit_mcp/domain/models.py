@@ -70,6 +70,13 @@ class PaginatedPostResponse(BaseModel):
         None,
         description="System message or warning (especially if partial_timeout occurred).",
     )
+    data_source: str | None = Field(
+        None,
+        description=(
+            "Provenance of the data: None = official Reddit API, "
+            "'arctic_shift' = community archive (metrics may lag live Reddit)."
+        ),
+    )
 
 
 class PaginatedCommentResponse(BaseModel):
@@ -81,3 +88,10 @@ class PaginatedCommentResponse(BaseModel):
     data: list[RedditComment] = Field(..., description="The extracted comments.")
     status: str = Field("success", description="Status of the request.")
     message: str | None = Field(None, description="System message or warning.")
+    data_source: str | None = Field(
+        None,
+        description=(
+            "Provenance of the data: None = official Reddit API, "
+            "'arctic_shift' = community archive (metrics may lag live Reddit)."
+        ),
+    )

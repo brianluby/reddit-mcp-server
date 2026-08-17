@@ -4,7 +4,11 @@ import re
 
 from ddgs import DDGS
 
-from reddit_mcp.infrastructure.search.base import BaseSearchProvider, SearchResult
+from reddit_mcp.infrastructure.search.base import (
+    BaseSearchProvider,
+    SearchProviderError,
+    SearchResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +79,9 @@ class DuckDuckGoSearchProvider(BaseSearchProvider):
                     )
 
             results = await asyncio.to_thread(_search)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.error(f"Error during DuckDuckGo search: {e}")
-            return []
+            raise SearchProviderError(f"DuckDuckGo search failed: {e}") from e
 
         urls: list[RedditSearchResult] = []
         for res in results:
