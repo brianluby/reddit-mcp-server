@@ -5,7 +5,7 @@ import pytest
 
 from reddit_mcp.application import tools
 from reddit_mcp.application.tools import DependencyContainer
-from reddit_mcp.application.utils import truncate_text
+from reddit_mcp.domain.enrichment import truncate_text
 from reddit_mcp.domain.models import (
     RedditComment,
     RedditPost,
@@ -14,6 +14,7 @@ from reddit_mcp.domain.models import (
 from reddit_mcp.infrastructure.arctic_shift_client import ArcticShiftError
 from reddit_mcp.infrastructure.reddit_client import (
     RedditAuthRequiredError,
+    RedditClient,
     RedditClientError,
 )
 from reddit_mcp.infrastructure.search.base import SearchProviderError
@@ -38,6 +39,7 @@ def sample_post():
 
 @pytest.fixture(autouse=True)
 def mock_reddit_client():
+    DependencyContainer.reset()
     mock_client = MagicMock()
     mock_client.search = AsyncMock()
     mock_client.native_reddit_search = AsyncMock()
@@ -57,9 +59,7 @@ def mock_reddit_client():
 
     yield mock_client
 
-    DependencyContainer._reddit_client = None
-    DependencyContainer._arctic_shift_client = None
-    DependencyContainer._search_provider = None
+    DependencyContainer.reset()
 
 
 @pytest.mark.asyncio
@@ -403,6 +403,21 @@ async def test_fallback_analyze_niche_trends_on_client_error():
     assert result.status == "warning"
     assert "Trending data is unavailable" in result.message
     assert len(result.data) == 0
+
+
+def test_container_lazy_init_and_reset():
+    DependencyContainer.reset()
+    try:
+        assert DependencyContainer.is_initialized() is False
+
+        client = DependencyContainer.get_reddit_client()
+        assert isinstance(client, RedditClient)
+        assert DependencyContainer.is_initialized() is True
+
+        DependencyContainer.reset()
+        assert DependencyContainer.is_initialized() is False
+    finally:
+        DependencyContainer.reset()
 
 
 @pytest.mark.asyncio

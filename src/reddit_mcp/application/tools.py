@@ -75,6 +75,17 @@ class DependencyContainer:
         return cls._search_provider
 
     @classmethod
+    def is_initialized(cls) -> bool:
+        return cls._reddit_client is not None
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset all dependencies to None (used by tests and cleanup)."""
+        cls._reddit_client = None
+        cls._arctic_shift_client = None
+        cls._search_provider = None
+
+    @classmethod
     def override_reddit_client(cls, client: RedditClient) -> None:
         """Used for injecting mock clients during testing."""
         cls._reddit_client = client
