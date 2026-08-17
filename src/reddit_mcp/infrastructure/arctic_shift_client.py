@@ -95,7 +95,7 @@ class ArcticShiftClient:
             raise ArcticShiftError(f"Arctic Shift posts fetch failed: {e}") from e
 
     async def get_post_thread(
-        self, post_url_or_id: str, max_comments: int = 50
+        self, post_url_or_id: str, max_comments: int = 50, comment_offset: int = 0
     ) -> RedditThread:
         """Fetch a specific post and its top comments from Arctic Shift."""
         post_id = (
@@ -112,9 +112,9 @@ class ArcticShiftClient:
             raise ArcticShiftError(f"Post {post_id} not found in Arctic Shift archive.")
         post = posts[0]
 
-        # 2. Fetch the comments
+        # 2. Fetch the comments (oversample, then filter/sort/slice to true top-N)
         url = f"{self.BASE_URL}/comments/search"
-        params = {"link_id": post_id, "limit": max_comments}
+        params = {"link_id": post_id, "limit": (comment_offset + max_comments) * 3}
 
         try:
             response = await self.http_client.get(url, params=params)
@@ -122,14 +122,15 @@ class ArcticShiftClient:
 
             comments = []
             for child in data.get("data", []):
-                if len(comments) >= max_comments:
-                    break
                 mapped = self._map_comment(child, post.id, post.subreddit)
                 if mapped:
                     comments.append(mapped)
 
             comments.sort(key=lambda x: x.score, reverse=True)
-            return RedditThread(post=post, comments=comments)
+            return RedditThread(
+                post=post,
+                comments=comments[comment_offset : comment_offset + max_comments],
+            )
         except Exception as e:
             raise ArcticShiftError(
                 f"Error fetching thread from Arctic Shift: {e}"
