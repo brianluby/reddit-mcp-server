@@ -57,9 +57,22 @@ def build_comment_url(subreddit: str, post_id: str, comment_id: str) -> str:
 
 
 def is_high_quality_comment(
-    author: str, body: str, score: int, min_score: int = 2, min_length: int = 40
+    author: str,
+    body: str,
+    score: int,
+    min_score: int = 2,
+    min_length: int = 40,
+    thread_age_in_days: int | None = None,
 ) -> bool:
-    """Smart heuristics to filter out bots, low-effort replies, and heavily downvoted opinions."""
+    """Smart heuristics to filter out bots, low-effort replies, and heavily downvoted opinions.
+
+    Args:
+        thread_age_in_days: Optional age of the thread in days. For young threads
+            (<= 2 days), the effective minimum score drops to 1 (or min_score if
+            explicitly passed lower than 1), since fresh/rising threads rarely
+            have comments above 1 point yet. When None (default), min_score
+            applies unchanged.
+    """
     if not body or not author:
         return False
 
@@ -76,7 +89,11 @@ def is_high_quality_comment(
     if len(body.strip()) < min_length:
         return False
 
-    return score >= min_score
+    effective_min_score = min_score
+    if thread_age_in_days is not None and thread_age_in_days <= 2:
+        effective_min_score = min(min_score, 1)
+
+    return score >= effective_min_score
 
 
 def llm_timeout(timeout_seconds: int = 15):

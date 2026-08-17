@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -35,4 +36,5 @@ jobs:
       run: |
         pytest tests/
 
+# re-register workflow with GitHub Actions index
 # Note: workflows must be re-registered with the Actions index after enabling Actions on this repo.

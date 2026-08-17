@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from reddit_mcp.domain.models import RedditThread
@@ -46,6 +47,24 @@ async def test_get_posts_by_ids_success(arctic_client, mock_http_client):
     assert len(posts) == 1
     assert posts[0].id == "abc"
     assert posts[0].title == "Arctic Post"
+
+
+@pytest.mark.asyncio
+async def test_get_posts_by_ids_empty_ids_returns_empty(
+    arctic_client, mock_http_client
+):
+    posts = await arctic_client.get_posts_by_ids([])
+
+    assert posts == []
+    mock_http_client.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_posts_by_ids_http_error_raises(arctic_client, mock_http_client):
+    mock_http_client.get = AsyncMock(side_effect=httpx.HTTPError("boom"))
+
+    with pytest.raises(ArcticShiftError, match="posts fetch failed"):
+        await arctic_client.get_posts_by_ids(["t3_abc"])
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,10 @@ class SearchResult:
         self.snippet = snippet
 
 
+class SearchProviderError(Exception):
+    """Raised when a search provider fails to execute a query."""
+
+
 class BaseSearchProvider(ABC):
     """
     Abstract base class for search engine providers.
