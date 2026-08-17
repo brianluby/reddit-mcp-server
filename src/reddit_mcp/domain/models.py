@@ -15,8 +15,11 @@ class RedditPost(BaseModel):
     )
     num_comments: int = Field(..., description="Total comments.")
     url: str = Field(..., description="The direct URL to the post.")
-    age_in_days: int = Field(
-        ..., description="Days since post was created. 0 means posted today."
+    age_in_days: int | None = Field(
+        ...,
+        description=(
+            "Days since post was created. None means the timestamp is unknown."
+        ),
     )
     created_at_human: str = Field(
         ..., description="Human-readable date (e.g., 'October 15, 2023')."

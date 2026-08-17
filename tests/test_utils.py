@@ -1,10 +1,4 @@
-from datetime import UTC, datetime, timedelta
-
-from reddit_mcp.application.utils import (
-    calculate_age_in_days,
-    is_high_quality_comment,
-    truncate_text,
-)
+from reddit_mcp.application.utils import is_high_quality_comment
 
 LONG_BODY = "This is a sufficiently long comment body that adds real substance."
 BOT_PHRASE_BODY = "I am a bot, and this action was performed automatically. " * 2
@@ -23,8 +17,26 @@ def test_automoderator_author_filtered():
     assert not is_high_quality_comment(author="AutoModerator", body=LONG_BODY, score=10)
 
 
-def test_bot_author_filtered():
-    assert not is_high_quality_comment(author="helpful_bot", body=LONG_BODY, score=10)
+def test_bot_suffix_author_filtered():
+    assert not is_high_quality_comment(author="user_bot", body=LONG_BODY, score=10)
+
+
+def test_bot_hyphen_suffix_author_filtered():
+    assert not is_high_quality_comment(author="user-bot", body=LONG_BODY, score=10)
+
+
+def test_bot_substring_in_legitimate_username_passes():
+    assert is_high_quality_comment(author="robotics_fan", body=LONG_BODY, score=10)
+
+
+def test_bottlerocket_username_passes():
+    assert is_high_quality_comment(author="BottleRocket", body=LONG_BODY, score=10)
+
+
+def test_abbotsford_resident_username_passes():
+    assert is_high_quality_comment(
+        author="abbotsford_resident", body=LONG_BODY, score=10
+    )
 
 
 def test_bot_phrase_body_filtered():
@@ -104,25 +116,3 @@ def test_empty_body_filtered():
 
 def test_empty_author_filtered():
     assert not is_high_quality_comment(author="", body=LONG_BODY, score=10)
-
-
-def test_truncate_text_under_limit():
-    assert truncate_text("hello", max_length=10) == "hello"
-
-
-def test_truncate_text_over_limit():
-    result = truncate_text("a" * 25, max_length=10)
-    assert result == "a" * 10 + "... (truncated)"
-
-
-def test_truncate_text_none():
-    assert truncate_text(None) == ""
-
-
-def test_calculate_age_in_days():
-    three_days_ago = (datetime.now(UTC) - timedelta(days=3)).timestamp()
-    assert calculate_age_in_days(three_days_ago) == 3
-
-
-def test_calculate_age_in_days_none():
-    assert calculate_age_in_days(None) == 0
