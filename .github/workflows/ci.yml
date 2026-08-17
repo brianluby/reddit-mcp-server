@@ -37,3 +37,4 @@ jobs:
         pytest tests/
 
 # re-register workflow with GitHub Actions index
+# Note: workflows must be re-registered with the Actions index after enabling Actions on this repo.
