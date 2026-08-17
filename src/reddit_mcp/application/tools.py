@@ -116,7 +116,7 @@ class DependencyContainer:
         cls._reddit_client = client
 
 
-@llm_timeout(timeout_seconds=15)
+@llm_timeout(timeout_seconds=15, response_model=PaginatedPostResponse)
 async def search_knowledge(
     query: str,
     subreddit: str | None = None,
@@ -177,7 +177,7 @@ async def search_knowledge(
     )
 
 
-@llm_timeout(timeout_seconds=15)
+@llm_timeout(timeout_seconds=15, response_model=PaginatedPostResponse)
 async def explore_reddit_discussions(
     keyword: str,
     subreddit: str | None = None,
@@ -223,7 +223,9 @@ async def explore_reddit_discussions(
             if post_ids:
                 posts = await arctic_client.get_posts_by_ids(post_ids)
                 data_source = "arctic_shift"
-                message = ARCHIVE_LAG_MESSAGE
+                message = ARCHIVE_LAG_MESSAGE + (
+                    " Sort and pagination are unavailable in fallback mode."
+                )
         except (SearchProviderError, ArcticShiftError) as e:
             logger.warning(
                 f"Fallback providers failed for explore_reddit_discussions: {e}"
@@ -245,16 +247,25 @@ async def explore_reddit_discussions(
     )
 
 
-@llm_timeout(timeout_seconds=20)
+@llm_timeout(timeout_seconds=20, response_model=PaginatedCommentResponse)
 async def extract_public_opinion(
-    post_url: str, max_comments: Annotated[int, Field(ge=1, le=100)] = 30
+    post_url: str,
+    max_comments: Annotated[int, Field(ge=1, le=100)] = 30,
+    page_token: str | None = None,
 ) -> PaginatedCommentResponse:
     """
     DEEP DIVE TOOL: Use this ONLY after finding a relevant post via search tools.
     This tool extracts PURE human opinions, filtering out noise, bots, and low-effort content.
     Citations: You MUST use the `comment_url` for each specific quote in your final report.
+    Pagination: pass `next_page_token` to continue reading deeper comments.
     """
     logger.info(f"extract_public_opinion: url='{post_url}'")
+    comment_offset = 0
+    if page_token:
+        try:
+            comment_offset = max(0, int(page_token))
+        except ValueError as e:
+            raise ValueError("Invalid page_token; it must be an integer string.") from e
     client = DependencyContainer.get_reddit_client()
     data_source = None
     message = None
@@ -262,7 +273,7 @@ async def extract_public_opinion(
     # Fetch thread (The client already maps basic data)
     try:
         thread = await client.get_post_thread(
-            post_url=post_url, max_comments=max_comments
+            post_url=post_url, max_comments=max_comments, comment_offset=comment_offset
         )
     except RedditClientError as e:
         logger.warning(
@@ -272,7 +283,9 @@ async def extract_public_opinion(
         arctic_client = DependencyContainer.get_arctic_shift_client()
         try:
             thread = await arctic_client.get_post_thread(
-                post_url_or_id=post_url, max_comments=max_comments
+                post_url_or_id=post_url,
+                max_comments=max_comments,
+                comment_offset=comment_offset,
             )
         except ArcticShiftError as e:
             logger.warning(f"Fallback providers failed for extract_public_opinion: {e}")
@@ -298,15 +311,23 @@ async def extract_public_opinion(
         )
     ]
 
+    # A short page means the raw stream is exhausted; a full page likely has more.
+    next_page_token = None
+    if len(thread.comments) >= max_comments and (
+        len(refined_comments) > 0 or len(thread.comments) == max_comments
+    ):
+        next_page_token = str(comment_offset + max_comments)
+
     return PaginatedCommentResponse(
         meta_context=build_meta_context(),
         data=refined_comments,
+        next_page_token=next_page_token,
         data_source=data_source,
         message=message,
     )
 
 
-@llm_timeout(timeout_seconds=15)
+@llm_timeout(timeout_seconds=15, response_model=PaginatedPostResponse)
 async def analyze_niche_trends(
     subreddit_name: str,
     trend_type: Literal["hot", "new", "top", "rising"] = "rising",

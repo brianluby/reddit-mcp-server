@@ -1,8 +1,17 @@
-from reddit_mcp.application.utils import is_high_quality_comment
+from reddit_mcp.application.utils import build_meta_context, is_high_quality_comment
+from reddit_mcp.domain.models import MetaContext
 
 LONG_BODY = "This is a sufficiently long comment body that adds real substance."
 BOT_PHRASE_BODY = "I am a bot, and this action was performed automatically. " * 2
 AUTO_PHRASE_BODY = "This action was performed automatically by a moderator. " * 2
+
+
+def test_build_meta_context_returns_model_instance():
+    ctx = build_meta_context()
+
+    assert isinstance(ctx, MetaContext)
+    assert ctx.current_server_date
+    assert "instruction_note" in ctx.model_dump()
 
 
 def test_high_quality_comment_passes():
