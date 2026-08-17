@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Polish from the adversarial-review backlog (issues #15–#22).
+
+### Added
+
+- `extract_public_opinion` supports pagination for deep threads via an
+  integer `page_token` / `next_page_token` cursor (skip-count over the raw
+  comment stream for Reddit; offset into the score-sorted list for Arctic
+  Shift). Short pages return no token.
+
+### Changed
+
+- Arctic Shift thread fetch oversamples (3×), filters deleted/removed, sorts
+  by score, and only then slices to `max_comments` — no more under-filled
+  pages that weren't the true top-N.
+- `llm_timeout` constructs its fallback from the tool's actual response model
+  (no more schema-drifted dict), and `build_meta_context` returns the
+  `MetaContext` domain model.
+- The `explore_reddit_discussions` fallback message now tells the LLM that
+  sort and pagination are unavailable in fallback mode.
+- The default `User-Agent` includes a per-install random suffix so zero-config
+  users are no longer a single shared identity to Reddit (set
+  `REDDIT_USER_AGENT` for a stable descriptive value; README updated).
+
+### Removed
+
+- Docker runtime stage runs as `nobody` instead of root; stray `pyrefly`
+  pragma removed from `server.py`.
+
 ## [0.2.0] - Resilient Fallbacks & Smart Filtering
 
 This release hardens the server's two headline promises: **graceful degradation**
