@@ -264,5 +264,26 @@ async def test_http_client_retry_after_capped(mock_auth_manager, monkeypatch):
 
     slept = [call.args[0] for call in sleep_mock.call_args_list]
     assert slept
-    assert all(seconds <= 5 for seconds in slept)
+    sleep_mock.assert_awaited_once_with(ResilientHTTPClient.MAX_RETRY_AFTER_SECONDS)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_total_budget_deadline(mock_auth_manager, monkeypatch):
+    # The aggregate deadline must expire even though each individual
+    # operation would succeed in isolation
+    monkeypatch.setattr(ResilientHTTPClient, "TOTAL_BUDGET_SECONDS", 0.05)
+
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    async def slow_get(*args, **kwargs):
+        import asyncio as real_asyncio
+
+        await real_asyncio.sleep(0.5)
+        raise AssertionError("should have been cancelled before completing")
+
+    client.client.get = slow_get
+
+    with pytest.raises(TimeoutError):
+        await client.get("https://oauth.reddit.com/test.json")
     await client.close()
