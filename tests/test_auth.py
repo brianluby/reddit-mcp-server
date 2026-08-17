@@ -61,3 +61,26 @@ async def test_auth_manager_http_error(auth_env):
         pytest.raises(RedditAuthError, match="HTTP 401"),
     ):
         await manager.get_token()
+
+
+@pytest.mark.asyncio
+async def test_auth_manager_invalidate_refetches_token(auth_env):
+    manager = RedditAuthManager(user_agent="test")
+
+    first_response = MagicMock()
+    first_response.json.return_value = {"access_token": "token1", "expires_in": 3600}
+    first_response.raise_for_status = MagicMock()
+
+    second_response = MagicMock()
+    second_response.json.return_value = {"access_token": "token2", "expires_in": 3600}
+    second_response.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient.post", return_value=first_response):
+        token = await manager.get_token()
+    assert token == "token1"
+
+    manager.invalidate()
+
+    with patch("httpx.AsyncClient.post", return_value=second_response):
+        token = await manager.get_token()
+    assert token == "token2"

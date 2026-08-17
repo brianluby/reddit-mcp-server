@@ -15,8 +15,11 @@ class RedditPost(BaseModel):
     )
     num_comments: int = Field(..., description="Total comments.")
     url: str = Field(..., description="The direct URL to the post.")
-    age_in_days: int = Field(
-        ..., description="Days since post was created. 0 means posted today."
+    age_in_days: int | None = Field(
+        ...,
+        description=(
+            "Days since post was created. None means the timestamp is unknown."
+        ),
     )
     created_at_human: str = Field(
         ..., description="Human-readable date (e.g., 'October 15, 2023')."
@@ -70,6 +73,13 @@ class PaginatedPostResponse(BaseModel):
         None,
         description="System message or warning (especially if partial_timeout occurred).",
     )
+    data_source: str | None = Field(
+        None,
+        description=(
+            "Provenance of the data: None = official Reddit API, "
+            "'arctic_shift' = community archive (metrics may lag live Reddit)."
+        ),
+    )
 
 
 class PaginatedCommentResponse(BaseModel):
@@ -81,3 +91,10 @@ class PaginatedCommentResponse(BaseModel):
     data: list[RedditComment] = Field(..., description="The extracted comments.")
     status: str = Field("success", description="Status of the request.")
     message: str | None = Field(None, description="System message or warning.")
+    data_source: str | None = Field(
+        None,
+        description=(
+            "Provenance of the data: None = official Reddit API, "
+            "'arctic_shift' = community archive (metrics may lag live Reddit)."
+        ),
+    )

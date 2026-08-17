@@ -49,6 +49,11 @@ class RedditAuthManager:
 
             return self._token
 
+    def invalidate(self) -> None:
+        """Clear the cached token, forcing a refresh on the next get_token call."""
+        self._token = None
+        self._expires_at = 0.0
+
     async def _refresh_token(self) -> None:
         """
         Fetch a new token from Reddit API using client credentials.
