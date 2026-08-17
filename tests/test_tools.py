@@ -408,7 +408,6 @@ async def test_fallback_analyze_niche_trends_on_client_error():
 @pytest.mark.asyncio
 async def test_container_lazy_init_and_reset():
     DependencyContainer.reset()
-    client = None
     try:
         assert DependencyContainer.is_initialized() is False
 
@@ -416,25 +415,41 @@ async def test_container_lazy_init_and_reset():
         assert isinstance(client, RedditClient)
         assert DependencyContainer.is_initialized() is True
 
-        DependencyContainer.reset()
+        # aclose() closes the shared HTTP client while the container owns it
+        await DependencyContainer.aclose()
         assert DependencyContainer.is_initialized() is False
     finally:
-        if client is not None:
-            await client.close()
         DependencyContainer.reset()
 
 
-def test_container_init_failure_clears_partial_state(monkeypatch):
-    # If any constructor fails, no partially-initialized state may survive
+@pytest.mark.asyncio
+async def test_container_init_failure_clears_partial_state(monkeypatch):
+    # If any constructor fails, no partially-initialized state survives and
+    # the already-constructed HTTP client is closed
+    closed = []
+
+    class FakeHTTPClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def close(self):
+            closed.append(True)
+
     def boom(*args, **kwargs):
         raise RuntimeError("construction failed")
 
+    monkeypatch.setattr(
+        "reddit_mcp.application.tools.ResilientHTTPClient", FakeHTTPClient
+    )
     monkeypatch.setattr("reddit_mcp.application.tools.ArcticShiftClient", boom)
     DependencyContainer.reset()
     try:
         with pytest.raises(RuntimeError, match="construction failed"):
             DependencyContainer.get_reddit_client()
 
+        await asyncio.sleep(0)  # let the scheduled close task run
+
+        assert closed == [True]
         assert DependencyContainer.is_initialized() is False
         assert DependencyContainer._reddit_client is None
         assert DependencyContainer._arctic_shift_client is None

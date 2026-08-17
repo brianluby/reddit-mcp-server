@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Annotated, Literal
 
@@ -45,6 +46,7 @@ class DependencyContainer:
     @classmethod
     def _init_dependencies(cls):
         if cls._reddit_client is None:
+            http_client = None
             try:
                 from reddit_mcp.infrastructure.settings import get_settings
 
@@ -61,6 +63,12 @@ class DependencyContainer:
                 arctic_shift_client = ArcticShiftClient(http_client=http_client)
             except Exception:
                 cls.reset()
+                if http_client is not None:
+                    close = http_client.close()
+                    try:
+                        asyncio.get_running_loop().create_task(close)
+                    except RuntimeError:
+                        asyncio.run(close)
                 raise
             cls._search_provider = search_provider
             cls._reddit_client = reddit_client
@@ -96,9 +104,11 @@ class DependencyContainer:
     @classmethod
     async def aclose(cls) -> None:
         """Close initialized clients and reset the container."""
-        if cls._reddit_client is not None:
-            await cls._reddit_client.close()
-        cls.reset()
+        try:
+            if cls._reddit_client is not None:
+                await cls._reddit_client.close()
+        finally:
+            cls.reset()
 
     @classmethod
     def override_reddit_client(cls, client: RedditClient) -> None:

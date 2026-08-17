@@ -6,7 +6,7 @@ This project is built using a strict 4-Layer Architecture to separate concerns, 
 
 1. **Domain Layer (`domain/`)**: The core of the application. Contains the Pydantic models representing the business entities (e.g., `RedditPost`, `RedditComment`, `RedditThread`), as well as pure enrichment/mapping helpers shared by the upper layers. This layer has no dependencies on other layers.
 2. **Infrastructure Layer (`infrastructure/`)**: Handles communication with the outside world. This includes the asynchronous HTTP clients for Reddit (`RedditClient`) and DuckDuckGo (`DuckDuckGoSearchClient`), as well as logging setup.
-3. **Application Layer (`application/`)**: Contains the business logic and the actual MCP tools (`tools.py`). It orchestrates data flow by calling the infrastructure clients and mapping the raw data to Domain models.
+3. **Application Layer (`application/`)**: Contains the business logic and the actual MCP tools (`tools.py`). It orchestrates data flow by calling the infrastructure clients, which map raw API responses to Domain models via the domain layer's enrichment helpers.
 4. **Interface Layer (`interface/`)**: The entry point for the application. Contains the FastMCP server setup (`server.py`) which registers the application tools and exposes them via the Standard IO transport.
 
 ## Data Flow Diagram
@@ -35,7 +35,7 @@ graph TD
     Tools -->|Fetches Data| RedditClient
     Tools -->|Searches URLs| DDGClient
     Tools -->|Returns| Models
-    RedditClient -->|Raw JSON| Tools
+    RedditClient -->|Domain Models| Tools
     RedditClient -->|Maps via| Enrichment
     DDGClient -->|Raw URLs| Tools
 ```
