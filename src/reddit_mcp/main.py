@@ -36,12 +36,10 @@ def main():
         sys.exit(1)
     finally:
         logger.info("Cleaning up resources...")
-        if DependencyContainer.is_initialized():
-            try:
-                client = DependencyContainer.get_reddit_client()
-                asyncio.run(client.close())
-            except Exception as cleanup_error:  # noqa: BLE001
-                logger.error(f"Error during cleanup: {cleanup_error}")
+        try:
+            asyncio.run(DependencyContainer.aclose())
+        except Exception as cleanup_error:  # noqa: BLE001
+            logger.error(f"Error during cleanup: {cleanup_error}")
 
 
 if __name__ == "__main__":

@@ -405,8 +405,10 @@ async def test_fallback_analyze_niche_trends_on_client_error():
     assert len(result.data) == 0
 
 
-def test_container_lazy_init_and_reset():
+@pytest.mark.asyncio
+async def test_container_lazy_init_and_reset():
     DependencyContainer.reset()
+    client = None
     try:
         assert DependencyContainer.is_initialized() is False
 
@@ -416,6 +418,27 @@ def test_container_lazy_init_and_reset():
 
         DependencyContainer.reset()
         assert DependencyContainer.is_initialized() is False
+    finally:
+        if client is not None:
+            await client.close()
+        DependencyContainer.reset()
+
+
+def test_container_init_failure_clears_partial_state(monkeypatch):
+    # If any constructor fails, no partially-initialized state may survive
+    def boom(*args, **kwargs):
+        raise RuntimeError("construction failed")
+
+    monkeypatch.setattr("reddit_mcp.application.tools.ArcticShiftClient", boom)
+    DependencyContainer.reset()
+    try:
+        with pytest.raises(RuntimeError, match="construction failed"):
+            DependencyContainer.get_reddit_client()
+
+        assert DependencyContainer.is_initialized() is False
+        assert DependencyContainer._reddit_client is None
+        assert DependencyContainer._arctic_shift_client is None
+        assert DependencyContainer._search_provider is None
     finally:
         DependencyContainer.reset()
 

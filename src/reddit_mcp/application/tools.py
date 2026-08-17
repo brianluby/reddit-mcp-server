@@ -45,19 +45,26 @@ class DependencyContainer:
     @classmethod
     def _init_dependencies(cls):
         if cls._reddit_client is None:
-            from reddit_mcp.infrastructure.settings import get_settings
+            try:
+                from reddit_mcp.infrastructure.settings import get_settings
 
-            settings = get_settings()
-            user_agent = settings.reddit_user_agent
-            auth_manager = RedditAuthManager(user_agent=user_agent)
-            http_client = ResilientHTTPClient(
-                auth_manager=auth_manager, user_agent=user_agent
-            )
-            cls._search_provider = DuckDuckGoSearchProvider()
-            cls._reddit_client = RedditClient(
-                http_client=http_client, search_provider=cls._search_provider
-            )
-            cls._arctic_shift_client = ArcticShiftClient(http_client=http_client)
+                settings = get_settings()
+                user_agent = settings.reddit_user_agent
+                auth_manager = RedditAuthManager(user_agent=user_agent)
+                http_client = ResilientHTTPClient(
+                    auth_manager=auth_manager, user_agent=user_agent
+                )
+                search_provider = DuckDuckGoSearchProvider()
+                reddit_client = RedditClient(
+                    http_client=http_client, search_provider=search_provider
+                )
+                arctic_shift_client = ArcticShiftClient(http_client=http_client)
+            except Exception:
+                cls.reset()
+                raise
+            cls._search_provider = search_provider
+            cls._reddit_client = reddit_client
+            cls._arctic_shift_client = arctic_shift_client
 
     @classmethod
     def get_reddit_client(cls) -> RedditClient:
@@ -80,10 +87,18 @@ class DependencyContainer:
 
     @classmethod
     def reset(cls) -> None:
-        """Reset all dependencies to None (used by tests and cleanup)."""
+        """Drop all dependency references WITHOUT closing them. Test seam only;
+        production shutdown must use aclose() to release HTTP resources."""
         cls._reddit_client = None
         cls._arctic_shift_client = None
         cls._search_provider = None
+
+    @classmethod
+    async def aclose(cls) -> None:
+        """Close initialized clients and reset the container."""
+        if cls._reddit_client is not None:
+            await cls._reddit_client.close()
+        cls.reset()
 
     @classmethod
     def override_reddit_client(cls, client: RedditClient) -> None:
