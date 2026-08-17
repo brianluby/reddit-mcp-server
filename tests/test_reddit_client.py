@@ -116,6 +116,59 @@ async def test_get_post_thread_success(reddit_client, mock_http_client):
 
 
 @pytest.mark.asyncio
+async def test_get_post_thread_comment_offset_paginates_raw_stream(
+    reddit_client, mock_http_client
+):
+    children = [
+        {
+            "kind": "t1",
+            "data": {
+                "id": f"c{n + 1}",
+                "author": f"user{n + 1}",
+                "score": 5,
+                "body": f"This is a sufficiently long comment body number {n + 1}.",
+                "created_utc": 1700000050.0 + n,
+            },
+        }
+        for n in range(5)
+    ]
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = [
+        {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "id": "123",
+                            "title": "Post",
+                            "subreddit": "test",
+                            "score": 10,
+                            "upvote_ratio": 1.0,
+                            "num_comments": 5,
+                            "permalink": "/r/test/comments/123/",
+                            "created_utc": 1700000000.0,
+                            "selftext": "...",
+                        },
+                    }
+                ]
+            }
+        },
+        {"data": {"children": children}},
+    ]
+    mock_http_client.get.return_value = mock_response
+
+    url = "http://reddit.com/r/test/comments/123"
+
+    thread = await reddit_client.get_post_thread(url, max_comments=2)
+    assert [c.id for c in thread.comments] == ["c1", "c2"]
+
+    thread = await reddit_client.get_post_thread(url, max_comments=2, comment_offset=1)
+    assert [c.id for c in thread.comments] == ["c2", "c3"]
+
+
+@pytest.mark.asyncio
 async def test_get_post_thread_malformed_json(reddit_client, mock_http_client):
     # Simulate reddit returning an unexpected structure (e.g., dict instead of list)
     mock_response = MagicMock()

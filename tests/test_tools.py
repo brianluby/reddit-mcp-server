@@ -7,6 +7,8 @@ from reddit_mcp.application import tools
 from reddit_mcp.application.tools import DependencyContainer
 from reddit_mcp.domain.enrichment import truncate_text
 from reddit_mcp.domain.models import (
+    PaginatedCommentResponse,
+    PaginatedPostResponse,
     RedditComment,
     RedditPost,
     RedditThread,
@@ -108,6 +110,77 @@ async def test_extract_public_opinion_logic(mock_reddit_client, sample_post):
     assert "instruction_note" in result.meta_context.model_dump()
 
 
+def _make_quality_comment(cid: str) -> RedditComment:
+    return RedditComment(
+        id=cid,
+        author=f"user_{cid}",
+        score=10,
+        body="This is a long enough and high quality comment for testing.",
+        comment_url=f"url_{cid}",
+        created_at_human="date",
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_full_page_returns_next_token(
+    mock_reddit_client, sample_post
+):
+    mock_reddit_client.get_post_thread.return_value = RedditThread(
+        post=sample_post,
+        comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
+    )
+
+    result = await tools.extract_public_opinion("http://url", max_comments=2)
+
+    assert result.next_page_token == "2"
+    mock_reddit_client.get_post_thread.assert_awaited_with(
+        post_url="http://url", max_comments=2, comment_offset=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_page_token_advances_offset(
+    mock_reddit_client, sample_post
+):
+    mock_reddit_client.get_post_thread.return_value = RedditThread(
+        post=sample_post,
+        comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
+    )
+
+    result = await tools.extract_public_opinion(
+        "http://url", max_comments=2, page_token="3"
+    )
+
+    assert result.next_page_token == "5"
+    mock_reddit_client.get_post_thread.assert_awaited_with(
+        post_url="http://url", max_comments=2, comment_offset=3
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_short_page_returns_no_token(
+    mock_reddit_client, sample_post
+):
+    mock_reddit_client.get_post_thread.return_value = RedditThread(
+        post=sample_post, comments=[_make_quality_comment("c1")]
+    )
+
+    result = await tools.extract_public_opinion("http://url", max_comments=2)
+
+    assert len(result.data) == 1
+    assert result.next_page_token is None
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_invalid_page_token_raises_value_error(
+    mock_reddit_client,
+):
+    with pytest.raises(ValueError, match="Invalid page_token"):
+        await tools.extract_public_opinion("http://url", page_token="abc")
+
+    mock_reddit_client.get_post_thread.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_explore_reddit_discussions_pagination(mock_reddit_client, sample_post):
     # Simulate reddit client returning a next_page_token
@@ -144,11 +217,27 @@ async def test_tool_llm_timeout(monkeypatch):
 
     result = await tools.search_knowledge("query")
 
-    # It should not crash, but return a fallback dict
-    assert isinstance(result, dict)
-    assert result["status"] == "partial_timeout"
-    assert "Request paused" in result["message"]
-    assert len(result["data"]) == 0
+    assert isinstance(result, PaginatedPostResponse)
+    assert result.status == "partial_timeout"
+    assert "Request paused" in result.message
+    assert len(result.data) == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_llm_timeout_comment_model_has_no_extra_fields(monkeypatch):
+    async def mock_wait_for(aw, timeout=None, **kwargs):
+        aw.close()
+        raise TimeoutError()
+
+    monkeypatch.setattr(asyncio, "wait_for", mock_wait_for)
+
+    result = await tools.extract_public_opinion("http://url")
+
+    assert isinstance(result, PaginatedCommentResponse)
+    assert result.status == "partial_timeout"
+    assert "Request paused" in result.message
+    assert len(result.data) == 0
+    assert set(result.model_dump().keys()) == set(PaginatedCommentResponse.model_fields)
 
 
 def test_truncate_text_util():
@@ -253,6 +342,7 @@ async def test_fallback_explore_on_client_error(sample_post):
     assert result.data_source == "arctic_shift"
     assert "Arctic Shift" in result.message
     assert result.next_page_token is None
+    assert "Sort and pagination are unavailable" in result.message
 
 
 @pytest.mark.asyncio

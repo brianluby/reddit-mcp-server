@@ -119,7 +119,7 @@ class RedditClient:
             raise RedditClientError(f"Error fetching subreddit trends: {e}") from e
 
     async def get_post_thread(
-        self, post_url: str, max_comments: int = 50
+        self, post_url: str, max_comments: int = 50, comment_offset: int = 0
     ) -> RedditThread:
         """Fetch a specific post and its top comments, parsing the comment tree."""
         if not self.http_client.auth_manager.has_credentials:
@@ -130,7 +130,8 @@ class RedditClient:
             raise RedditClientError("Invalid Reddit post URL provided.")
 
         url = f"https://oauth.reddit.com/comments/{post_id}.json"
-        params = {"limit": max_comments + 20}  # Buffer for 'more' items
+        # Buffer for 'more' items; offset shifts the window into the raw stream
+        params = {"limit": max_comments + 20 + comment_offset}
 
         try:
             response = await self.http_client.get(url, params=params)
@@ -143,9 +144,11 @@ class RedditClient:
             post = self._map_submission(post_data)
 
             comments = []
+            raw_count = 0
             comment_children = data[1].get("data", {}).get("children", [])
 
             def parse_comments(children: list[dict[str, Any]]):
+                nonlocal raw_count
                 for child in children:
                     if len(comments) >= max_comments:
                         return
@@ -154,9 +157,12 @@ class RedditClient:
                     c_data = child.get("data", {})
 
                     if kind == "t1":  # Comment
-                        mapped = self._map_comment(c_data, post.id, post.subreddit)
-                        if mapped:
-                            comments.append(mapped)
+                        # Count raw t1s pre-filter so offsets stay stable across pages
+                        if raw_count >= comment_offset:
+                            mapped = self._map_comment(c_data, post.id, post.subreddit)
+                            if mapped:
+                                comments.append(mapped)
+                        raw_count += 1
 
                         # Recursively parse replies if they exist
                         replies = c_data.get("replies")
