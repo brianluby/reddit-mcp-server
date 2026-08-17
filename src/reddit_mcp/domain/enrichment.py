@@ -35,5 +35,9 @@ def format_timestamp(created_utc: float | None) -> str:
 
 def build_comment_url(subreddit: str, post_id: str, comment_id: str) -> str:
     """Fabricates an absolute deep-link to a specific comment."""
-    clean_sub = subreddit.replace("r/", "").replace("/r/", "")
+    clean_sub = subreddit.strip()
+    if clean_sub.startswith("/r/"):
+        clean_sub = clean_sub[3:]
+    elif clean_sub.startswith("r/"):
+        clean_sub = clean_sub[2:]
     return f"https://www.reddit.com/r/{clean_sub}/comments/{post_id}/_/{comment_id}/"
