@@ -19,7 +19,6 @@ graph TD
 
     subgraph Application Layer
         Tools[MCP Tools]
-        Utils[Truncation Utilities]
     end
 
     subgraph Infrastructure Layer
@@ -29,14 +28,15 @@ graph TD
 
     subgraph Domain Layer
         Models[Pydantic Models]
+        Enrichment[Enrichment Helpers]
     end
 
     MCP -->|Registers & Invokes| Tools
-    Tools -->|Uses| Utils
     Tools -->|Fetches Data| RedditClient
     Tools -->|Searches URLs| DDGClient
     Tools -->|Returns| Models
     RedditClient -->|Raw JSON| Tools
+    RedditClient -->|Maps via| Enrichment
     DDGClient -->|Raw URLs| Tools
 ```
 
