@@ -35,6 +35,7 @@ class ResilientHTTPClient:
         """
         Perform a GET request with automatic token injection and rate limit retries.
         """
+        auth_retry_done = False
         for attempt in range(max_retries):
             headers = {"User-Agent": self.user_agent}
             token = await self.auth_manager.get_token()
@@ -74,6 +75,15 @@ class ResilientHTTPClient:
                             )
                         else:
                             response.raise_for_status()
+
+                # Stale token: invalidate and retry once with a fresh token
+                if response.status_code == 401 and token and not auth_retry_done:
+                    auth_retry_done = True
+                    logger.warning(
+                        f"HTTP 401 on {url}. Invalidating token and retrying."
+                    )
+                    self.auth_manager.invalidate()
+                    continue
 
                 # Raise for other HTTP errors (4xx)
                 response.raise_for_status()

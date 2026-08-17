@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from reddit_mcp.infrastructure.auth import RedditAuthManager
@@ -70,6 +71,51 @@ async def test_http_client_429_retry_success(mock_auth_manager, monkeypatch):
     response = await client.get("http://test.com", max_retries=3)
     assert response.status_code == 200
     assert client.client.get.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_401_retry_success(mock_auth_manager, monkeypatch):
+    # Skip actual asyncio.sleep during tests to make them fast
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    fail_response = MagicMock()
+    fail_response.status_code = 401
+
+    success_response = MagicMock()
+    success_response.status_code = 200
+    success_response.raise_for_status = MagicMock()
+
+    # First call returns 401, second call returns 200
+    client.client.get = AsyncMock(side_effect=[fail_response, success_response])
+
+    response = await client.get("http://test.com")
+    assert response.status_code == 200
+    assert client.client.get.call_count == 2
+    mock_auth_manager.invalidate.assert_called_once()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_401_retry_exhausted(mock_auth_manager, monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    fail_response = MagicMock()
+    fail_response.status_code = 401
+    fail_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Unauthorized", request=MagicMock(), response=fail_response
+    )
+
+    # Both calls return 401
+    client.client.get = AsyncMock(side_effect=[fail_response, fail_response])
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get("http://test.com")
+
+    assert client.client.get.call_count == 2
+    mock_auth_manager.invalidate.assert_called_once()
     await client.close()
 
 
