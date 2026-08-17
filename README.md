@@ -90,6 +90,8 @@ REDDIT_CLIENT_ID="your_client_id_here"
 REDDIT_CLIENT_SECRET="your_client_secret_here"
 ```
 
+Consider also setting `REDDIT_USER_AGENT` to a descriptive, unique value — Reddit's API guidelines ask for this, even in zero-config mode.
+
 ---
 
 ## 🐳 Docker Installation

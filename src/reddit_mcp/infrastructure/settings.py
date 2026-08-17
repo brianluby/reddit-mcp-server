@@ -1,7 +1,15 @@
+import uuid
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_user_agent() -> str:
+    return (
+        f"reddit-mcp-server/0.2.0 "
+        f"(by /u/reddit-mcp-server-dev; install:{uuid.uuid4().hex[:8]})"
+    )
 
 
 class AppConfig(BaseSettings):
@@ -17,7 +25,7 @@ class AppConfig(BaseSettings):
         default=None, description="Reddit App Client Secret"
     )
     reddit_user_agent: str = Field(
-        default="reddit-mcp-server/0.1.0 (by /u/reddit-mcp-server-dev)",
+        default_factory=_default_user_agent,
         description="User-Agent string for HTTP requests",
     )
 
