@@ -2,7 +2,7 @@ import logging
 import re
 from typing import Any
 
-from reddit_mcp.application.utils import (
+from reddit_mcp.domain.enrichment import (
     build_comment_url,
     calculate_age_in_days,
     format_timestamp,
