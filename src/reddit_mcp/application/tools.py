@@ -30,7 +30,7 @@ from reddit_mcp.infrastructure.search.providers.duckduckgo import (
 logger = logging.getLogger(__name__)
 
 DEGRADED_MESSAGE = (
-    "Reddit API and fallback providers are currently unavailable. Try again later."
+    "Reddit retrieval failed and the fallback flow could not complete. Try again later."
 )
 ARCHIVE_LAG_MESSAGE = "Served via the Arctic Shift archive; scores may lag live Reddit."
 
@@ -117,6 +117,8 @@ async def search_knowledge(
             post_ids = [res.post_id for res in search_results if res.post_id]
             if post_ids:
                 posts = await arctic_client.get_posts_by_ids(post_ids)
+                data_source = "arctic_shift"
+                message = ARCHIVE_LAG_MESSAGE
         except (SearchProviderError, ArcticShiftError) as e:
             logger.warning(f"Fallback providers failed for search_knowledge: {e}")
             return PaginatedPostResponse(
@@ -126,8 +128,6 @@ async def search_knowledge(
                 status="degraded",
                 message=DEGRADED_MESSAGE,
             )
-        data_source = "arctic_shift"
-        message = ARCHIVE_LAG_MESSAGE
 
     # Filter: Ensure we don't send posts with empty titles or very low quality
     valid_posts = [p for p in posts if len(p.title) > 5]
@@ -186,6 +186,8 @@ async def explore_reddit_discussions(
             post_ids = [res.post_id for res in search_results if res.post_id]
             if post_ids:
                 posts = await arctic_client.get_posts_by_ids(post_ids)
+                data_source = "arctic_shift"
+                message = ARCHIVE_LAG_MESSAGE
         except (SearchProviderError, ArcticShiftError) as e:
             logger.warning(
                 f"Fallback providers failed for explore_reddit_discussions: {e}"
@@ -197,8 +199,6 @@ async def explore_reddit_discussions(
                 status="degraded",
                 message=DEGRADED_MESSAGE,
             )
-        data_source = "arctic_shift"
-        message = ARCHIVE_LAG_MESSAGE
 
     return PaginatedPostResponse(
         meta_context=build_meta_context(),

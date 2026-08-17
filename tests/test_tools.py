@@ -212,6 +212,28 @@ async def test_fallback_search_knowledge_on_client_error(sample_post):
 
 
 @pytest.mark.asyncio
+async def test_fallback_search_knowledge_no_post_ids_no_provenance():
+    # DDG results without parsable post IDs -> Arctic Shift never consulted,
+    # so the response must not claim archive provenance/lag
+    mock_reddit = DependencyContainer.get_reddit_client()
+    mock_reddit.search.side_effect = RedditClientError("HTTP 401")
+
+    mock_search = DependencyContainer.get_search_provider()
+    mock_search.search.return_value = [
+        RedditSearchResult(url="http://reddit.com/r/test", title="t", snippet="s")
+    ]
+
+    mock_arctic = DependencyContainer.get_arctic_shift_client()
+
+    result = await tools.search_knowledge("query")
+    assert result.status == "success"
+    assert len(result.data) == 0
+    assert result.data_source is None
+    assert result.message is None
+    mock_arctic.get_posts_by_ids.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_fallback_explore_on_client_error(sample_post):
     mock_reddit = DependencyContainer.get_reddit_client()
     mock_reddit.native_reddit_search.side_effect = RedditClientError("HTTP 401")
@@ -272,7 +294,7 @@ async def test_degraded_search_knowledge_when_ddg_fails():
     assert result.status == "degraded"
     assert len(result.data) == 0
     assert result.message
-    assert "unavailable" in result.message
+    assert "Try again later" in result.message
 
 
 @pytest.mark.asyncio
@@ -292,7 +314,7 @@ async def test_degraded_search_knowledge_when_arctic_fails():
     assert result.status == "degraded"
     assert len(result.data) == 0
     assert result.message
-    assert "unavailable" in result.message
+    assert "Try again later" in result.message
 
 
 @pytest.mark.asyncio
@@ -307,7 +329,7 @@ async def test_degraded_extract_public_opinion_when_arctic_fails():
     assert result.status == "degraded"
     assert len(result.data) == 0
     assert result.message
-    assert "unavailable" in result.message
+    assert "Try again later" in result.message
 
 
 @pytest.mark.asyncio
