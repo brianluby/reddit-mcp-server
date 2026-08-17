@@ -18,6 +18,9 @@ class ResilientHTTPClient:
     HTTP client wrapper using httpx with built-in resilience.
     Automatically injects Reddit OAuth tokens, enforces User-Agent,
     and handles rate limits (429) using exponential backoff.
+
+    Bearer tokens are only attached to Reddit API hosts, so shared use with
+    third-party clients (e.g. Arctic Shift) never leaks credentials.
     """
 
     def __init__(self, auth_manager: RedditAuthManager, user_agent: str):
@@ -29,16 +32,24 @@ class ResilientHTTPClient:
         """Close the underlying HTTP client."""
         await self.client.aclose()
 
+    @staticmethod
+    def _is_reddit_url(url: str) -> bool:
+        host = httpx.URL(url).host or ""
+        return host == "reddit.com" or host.endswith(".reddit.com")
+
     async def get(
         self, url: str, params: dict[str, Any] | None = None, max_retries: int = 3
     ) -> httpx.Response:
         """
         Perform a GET request with automatic token injection and rate limit retries.
+        The one-shot 401 token-refresh retry does not consume the retry budget.
         """
+        is_reddit = self._is_reddit_url(url)
+        attempt = 0
         auth_retry_done = False
-        for attempt in range(max_retries):
+        while True:
             headers = {"User-Agent": self.user_agent}
-            token = await self.auth_manager.get_token()
+            token = await self.auth_manager.get_token() if is_reddit else None
 
             if token:
                 headers["Authorization"] = f"Bearer {token}"
@@ -67,6 +78,7 @@ class ResilientHTTPClient:
 
                     if attempt < max_retries - 1:
                         await asyncio.sleep(wait_seconds)
+                        attempt += 1
                         continue
                     else:
                         if response.status_code == 429:
@@ -76,7 +88,8 @@ class ResilientHTTPClient:
                         else:
                             response.raise_for_status()
 
-                # Stale token: invalidate and retry once with a fresh token
+                # Stale token: invalidate and retry once with a fresh token.
+                # This retry is independent of the general retry budget.
                 if response.status_code == 401 and token and not auth_retry_done:
                     auth_retry_done = True
                     logger.warning(
@@ -97,7 +110,6 @@ class ResilientHTTPClient:
                 if attempt < max_retries - 1:
                     wait_seconds = 2**attempt
                     await asyncio.sleep(wait_seconds)
+                    attempt += 1
                     continue
                 raise
-
-        raise RuntimeError("Failed to complete request (should not reach here)")
