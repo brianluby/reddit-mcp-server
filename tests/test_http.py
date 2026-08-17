@@ -195,3 +195,95 @@ async def test_http_client_429_max_retries(mock_auth_manager, monkeypatch):
 
     assert client.client.get.call_count == 2
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_5xx_retry_success(mock_auth_manager, monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    fail_response = MagicMock()
+    fail_response.status_code = 503
+    fail_response.headers = {}
+
+    success_response = MagicMock()
+    success_response.status_code = 200
+    success_response.raise_for_status = MagicMock()
+
+    # First call returns 503, second call returns 200
+    client.client.get = AsyncMock(side_effect=[fail_response, success_response])
+
+    response = await client.get("http://test.com")
+    assert response.status_code == 200
+    assert client.client.get.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_5xx_max_retries_raises(mock_auth_manager, monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    fail_response = MagicMock()
+    fail_response.status_code = 503
+    fail_response.headers = {}
+    fail_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Service Unavailable", request=MagicMock(), response=fail_response
+    )
+
+    # Always return 503
+    client.client.get = AsyncMock(return_value=fail_response)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get("http://test.com")
+
+    assert client.client.get.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_retry_after_capped(mock_auth_manager, monkeypatch):
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", sleep_mock)
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    fail_response = MagicMock()
+    fail_response.status_code = 429
+    fail_response.headers = {"Retry-After": "900"}
+
+    success_response = MagicMock()
+    success_response.status_code = 200
+    success_response.raise_for_status = MagicMock()
+
+    # First call returns 429 with a huge Retry-After, second returns 200
+    client.client.get = AsyncMock(side_effect=[fail_response, success_response])
+
+    response = await client.get("http://test.com")
+    assert response.status_code == 200
+    assert client.client.get.call_count == 2
+
+    slept = [call.args[0] for call in sleep_mock.call_args_list]
+    assert slept
+    sleep_mock.assert_awaited_once_with(ResilientHTTPClient.MAX_RETRY_AFTER_SECONDS)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_total_budget_deadline(mock_auth_manager, monkeypatch):
+    # The aggregate deadline must expire even though each individual
+    # operation would succeed in isolation
+    monkeypatch.setattr(ResilientHTTPClient, "TOTAL_BUDGET_SECONDS", 0.05)
+
+    client = ResilientHTTPClient(auth_manager=mock_auth_manager, user_agent="test")
+
+    async def slow_get(*args, **kwargs):
+        import asyncio as real_asyncio
+
+        await real_asyncio.sleep(0.5)
+        raise AssertionError("should have been cancelled before completing")
+
+    client.client.get = slow_get
+
+    with pytest.raises(TimeoutError):
+        await client.get("https://oauth.reddit.com/test.json")
+    await client.close()

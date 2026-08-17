@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Annotated, Literal
 
@@ -45,19 +46,33 @@ class DependencyContainer:
     @classmethod
     def _init_dependencies(cls):
         if cls._reddit_client is None:
-            from reddit_mcp.infrastructure.settings import get_settings
+            http_client = None
+            try:
+                from reddit_mcp.infrastructure.settings import get_settings
 
-            settings = get_settings()
-            user_agent = settings.reddit_user_agent
-            auth_manager = RedditAuthManager(user_agent=user_agent)
-            http_client = ResilientHTTPClient(
-                auth_manager=auth_manager, user_agent=user_agent
-            )
-            cls._search_provider = DuckDuckGoSearchProvider()
-            cls._reddit_client = RedditClient(
-                http_client=http_client, search_provider=cls._search_provider
-            )
-            cls._arctic_shift_client = ArcticShiftClient(http_client=http_client)
+                settings = get_settings()
+                user_agent = settings.reddit_user_agent
+                auth_manager = RedditAuthManager(user_agent=user_agent)
+                http_client = ResilientHTTPClient(
+                    auth_manager=auth_manager, user_agent=user_agent
+                )
+                search_provider = DuckDuckGoSearchProvider()
+                reddit_client = RedditClient(
+                    http_client=http_client, search_provider=search_provider
+                )
+                arctic_shift_client = ArcticShiftClient(http_client=http_client)
+            except Exception:
+                cls.reset()
+                if http_client is not None:
+                    close = http_client.close()
+                    try:
+                        asyncio.get_running_loop().create_task(close)
+                    except RuntimeError:
+                        asyncio.run(close)
+                raise
+            cls._search_provider = search_provider
+            cls._reddit_client = reddit_client
+            cls._arctic_shift_client = arctic_shift_client
 
     @classmethod
     def get_reddit_client(cls) -> RedditClient:
@@ -73,6 +88,27 @@ class DependencyContainer:
     def get_search_provider(cls) -> DuckDuckGoSearchProvider:
         cls._init_dependencies()
         return cls._search_provider
+
+    @classmethod
+    def is_initialized(cls) -> bool:
+        return cls._reddit_client is not None
+
+    @classmethod
+    def reset(cls) -> None:
+        """Drop all dependency references WITHOUT closing them. Test seam only;
+        production shutdown must use aclose() to release HTTP resources."""
+        cls._reddit_client = None
+        cls._arctic_shift_client = None
+        cls._search_provider = None
+
+    @classmethod
+    async def aclose(cls) -> None:
+        """Close initialized clients and reset the container."""
+        try:
+            if cls._reddit_client is not None:
+                await cls._reddit_client.close()
+        finally:
+            cls.reset()
 
     @classmethod
     def override_reddit_client(cls, client: RedditClient) -> None:

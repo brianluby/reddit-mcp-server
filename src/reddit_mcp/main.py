@@ -37,8 +37,7 @@ def main():
     finally:
         logger.info("Cleaning up resources...")
         try:
-            client = DependencyContainer.get_reddit_client()
-            asyncio.run(client.close())
+            asyncio.run(DependencyContainer.aclose())
         except Exception as cleanup_error:  # noqa: BLE001
             logger.error(f"Error during cleanup: {cleanup_error}")
 

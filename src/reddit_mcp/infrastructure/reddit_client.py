@@ -2,8 +2,9 @@ import logging
 import re
 from typing import Any
 
-from reddit_mcp.application.utils import (
+from reddit_mcp.domain.enrichment import (
     build_comment_url,
+    calculate_age_in_days,
     format_timestamp,
     truncate_text,
 )
@@ -40,7 +41,6 @@ class RedditClient:
     def _map_submission(self, data: dict[str, Any]) -> RedditPost:
         """Map Reddit JSON submission data to our enriched RedditPost model."""
         created_utc = data.get("created_utc")
-        from reddit_mcp.application.utils import calculate_age_in_days
 
         return RedditPost(
             id=data.get("id", ""),

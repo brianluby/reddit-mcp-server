@@ -6,35 +6,8 @@ from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
-
-def truncate_text(text: str | None, max_length: int = 2000) -> str:
-    """
-    Truncates text to a maximum length to prevent context window overflow.
-    Intelligently cuts off text and appends '... (truncated)'.
-    """
-    if not text:
-        return ""
-    if len(text) > max_length:
-        return text[:max_length] + "... (truncated)"
-    return text
-
-
-def calculate_age_in_days(created_utc: float | None) -> int:
-    """Calculates the integer age of a post in days relative to now."""
-    if not created_utc:
-        return 0
-    now = datetime.now(UTC)
-    created_dt = datetime.fromtimestamp(created_utc, tz=UTC)
-    delta = now - created_dt
-    return max(0, delta.days)
-
-
-def format_timestamp(created_utc: float | None) -> str:
-    """Converts Reddit's Unix timestamp to a human-readable string."""
-    if not created_utc:
-        return "Unknown date"
-    dt = datetime.fromtimestamp(created_utc, tz=UTC)
-    return dt.strftime("%B %d, %Y")
+_KNOWN_BOT_AUTHORS = {"automoderator"}
+_BOT_NAME_SUFFIXES = ("_bot", "-bot", "bot_")
 
 
 def build_meta_context() -> dict:
@@ -48,12 +21,6 @@ def build_meta_context() -> dict:
             "4. Only high-quality data is returned."
         ),
     }
-
-
-def build_comment_url(subreddit: str, post_id: str, comment_id: str) -> str:
-    """Fabricates an absolute deep-link to a specific comment."""
-    clean_sub = subreddit.replace("r/", "").replace("/r/", "")
-    return f"https://www.reddit.com/r/{clean_sub}/comments/{post_id}/_/{comment_id}/"
 
 
 def is_high_quality_comment(
@@ -77,7 +44,7 @@ def is_high_quality_comment(
         return False
 
     author_lower = author.lower()
-    if "bot" in author_lower or author_lower == "automoderator":
+    if author_lower in _KNOWN_BOT_AUTHORS or author_lower.endswith(_BOT_NAME_SUFFIXES):
         return False
 
     if (
