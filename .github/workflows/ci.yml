@@ -34,3 +34,5 @@ jobs:
     - name: Test with pytest
       run: |
         pytest tests/
+
+# Note: workflows must be re-registered with the Actions index after enabling Actions on this repo.
