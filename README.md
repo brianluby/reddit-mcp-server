@@ -27,10 +27,10 @@ sequenceDiagram
     AI->>MCP: Request (e.g., search_knowledge)
     MCP->>Tools: Route request
     Tools->>Reddit: Attempt Fetch (Resilient HTTP)
-    alt Has OAuth Credentials
+    alt Has OAuth Credentials & API Healthy
         Note over Reddit,Tools: Handles 429 (Rate Limits) with Retry-After backoff!
         Reddit-->>Tools: Return Official JSON payload
-    else Zero-Config / Missing Credentials
+    else Zero-Config OR Reddit API Fails
         Note over Tools,Fallback: Graceful Degradation Active
         Tools->>Fallback: Execute Search / Fetch Archive
         Fallback-->>Tools: Return Alternative JSON payload
@@ -50,6 +50,17 @@ sequenceDiagram
 - 🔍 **Strategic Search:** Integrates a decoupled search provider system (Strategy Pattern) allowing easy addition of custom search engines.
 - 🤖 **LLM-Safe Filtering:** Cleans thread payloads by dropping auto-moderators, bot notifications, and low-quality comments, saving precious LLM token costs.
 - ⏱️ **Strict LLM Timeout Protection:** Uses decorators to force safe API timeouts, returning clean graceful JSON-RPC fallbacks instead of hanging the AI client.
+
+---
+
+## 🧰 Available Tools
+
+| Tool Name | Purpose | Best Used For |
+| :--- | :--- | :--- |
+| `search_knowledge` | Broad web search via DuckDuckGo | Finding technical explanations and factual discussions across Reddit. |
+| `explore_reddit_discussions` | Discussion search with metrics | Gauging sentiment, upvote consensus, and topic exploration. |
+| `extract_public_opinion` | Deep comment tree extraction & filtering | Reading high-quality community opinions with noise & bots removed. |
+| `analyze_niche_trends` | Live trending & rising posts tracker | Identifying real-time problems, pain points, or new ideas in a niche. |
 
 ---
 
