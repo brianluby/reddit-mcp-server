@@ -11,10 +11,11 @@ Polish from the adversarial-review backlog (issues #15–#22).
 
 ### Added
 
-- `extract_public_opinion` supports pagination for deep threads via an
-  integer `page_token` / `next_page_token` cursor (skip-count over the raw
-  comment stream for Reddit; offset into the score-sorted list for Arctic
-  Shift). Short pages return no token.
+- `extract_public_opinion` supports pagination for deep threads via a
+  provider-prefixed `page_token` / `next_page_token` cursor (`reddit:` is a
+  skip-count over the raw comment stream; `arctic:` is an offset into the
+  score-sorted list). Tokens are bound to the provider that issued them and
+  capped at 10,000 comments deep; short pages return no token.
 
 ### Changed
 
@@ -22,18 +23,21 @@ Polish from the adversarial-review backlog (issues #15–#22).
   by score, and only then slices to `max_comments` — no more under-filled
   pages that weren't the true top-N.
 - `llm_timeout` constructs its fallback from the tool's actual response model
-  (no more schema-drifted dict), and `build_meta_context` returns the
-  `MetaContext` domain model.
+  (no more schema-drifted dict; the model-less dict fallback is now strictly
+  JSON-serializable), and `build_meta_context` returns the `MetaContext`
+  domain model.
 - The `explore_reddit_discussions` fallback message now tells the LLM that
   sort and pagination are unavailable in fallback mode.
-- The default `User-Agent` includes a per-install random suffix so zero-config
-  users are no longer a single shared identity to Reddit (set
-  `REDDIT_USER_AGENT` for a stable descriptive value; README updated).
+- The default `User-Agent` includes a per-install random suffix (persisted in
+  the user's state directory so it survives restarts; process-stable fallback
+  when the directory is unwritable) so zero-config users are no longer a single
+  shared identity to Reddit (set `REDDIT_USER_AGENT` for a stable descriptive
+  value; README updated).
+- Docker runtime stage runs as `nobody` instead of root.
 
 ### Removed
 
-- Docker runtime stage runs as `nobody` instead of root; stray `pyrefly`
-  pragma removed from `server.py`.
+- Stray `pyrefly` pragma removed from `server.py`.
 
 ## [0.2.0] - 2026-08-17 - Resilient Fallbacks & Smart Filtering
 

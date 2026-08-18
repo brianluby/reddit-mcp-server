@@ -107,34 +107,17 @@ async def test_get_post_thread_success(reddit_client, mock_http_client):
     ]
     mock_http_client.get.return_value = mock_response
 
-    thread = await reddit_client.get_post_thread(
+    thread, next_offset = await reddit_client.get_post_thread(
         "http://reddit.com/r/test/comments/123"
     )
 
     assert isinstance(thread, RedditThread)
     assert thread.comments[0].created_at_human is not None
+    assert next_offset is None  # short stream, no continuation
 
 
-@pytest.mark.asyncio
-async def test_get_post_thread_comment_offset_paginates_raw_stream(
-    reddit_client, mock_http_client
-):
-    children = [
-        {
-            "kind": "t1",
-            "data": {
-                "id": f"c{n + 1}",
-                "author": f"user{n + 1}",
-                "score": 5,
-                "body": f"This is a sufficiently long comment body number {n + 1}.",
-                "created_utc": 1700000050.0 + n,
-            },
-        }
-        for n in range(5)
-    ]
-
-    mock_response = MagicMock()
-    mock_response.json.return_value = [
+def _thread_payload(children):
+    return [
         {
             "data": {
                 "children": [
@@ -146,7 +129,7 @@ async def test_get_post_thread_comment_offset_paginates_raw_stream(
                             "subreddit": "test",
                             "score": 10,
                             "upvote_ratio": 1.0,
-                            "num_comments": 5,
+                            "num_comments": len(children),
                             "permalink": "/r/test/comments/123/",
                             "created_utc": 1700000000.0,
                             "selftext": "...",
@@ -157,15 +140,74 @@ async def test_get_post_thread_comment_offset_paginates_raw_stream(
         },
         {"data": {"children": children}},
     ]
+
+
+def _raw_comment(
+    n: int, body: str | None = "This is a sufficiently long comment body."
+) -> dict:
+    data = {
+        "id": f"c{n}",
+        "author": f"user{n}",
+        "score": 5,
+        "created_utc": 1700000050.0 + n,
+    }
+    if body is not None:
+        data["body"] = f"{body} number {n}."
+    return {"kind": "t1", "data": data}
+
+
+@pytest.mark.asyncio
+async def test_get_post_thread_comment_offset_paginates_raw_stream(
+    reddit_client, mock_http_client
+):
+    children = [_raw_comment(n + 1) for n in range(5)]
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = _thread_payload(children)
     mock_http_client.get.return_value = mock_response
 
     url = "http://reddit.com/r/test/comments/123"
 
-    thread = await reddit_client.get_post_thread(url, max_comments=2)
+    thread, next_offset = await reddit_client.get_post_thread(url, max_comments=2)
     assert [c.id for c in thread.comments] == ["c1", "c2"]
+    assert next_offset == 2
 
-    thread = await reddit_client.get_post_thread(url, max_comments=2, comment_offset=1)
+    thread, next_offset = await reddit_client.get_post_thread(
+        url, max_comments=2, comment_offset=1
+    )
     assert [c.id for c in thread.comments] == ["c2", "c3"]
+    assert next_offset == 3
+
+
+@pytest.mark.asyncio
+async def test_get_post_thread_offset_counts_unmapped_raw_comments(
+    reddit_client, mock_http_client
+):
+    # c1 fails mapping (empty body) but still consumes a raw-stream slot; the
+    # next offset must reflect the raw count so page 2 has no duplicate.
+    children = [
+        _raw_comment(1, body=None),
+        _raw_comment(2),
+        _raw_comment(3),
+        _raw_comment(4),
+    ]
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = _thread_payload(children)
+    mock_http_client.get.return_value = mock_response
+
+    url = "http://reddit.com/r/test/comments/123"
+
+    page_one, next_offset = await reddit_client.get_post_thread(url, max_comments=2)
+    assert [c.id for c in page_one.comments] == ["c2", "c3"]
+    assert next_offset == 3  # c1 was consumed even though it failed mapping
+
+    page_two, next_offset = await reddit_client.get_post_thread(
+        url, max_comments=2, comment_offset=next_offset
+    )
+    assert [c.id for c in page_two.comments] == ["c4"]
+    assert next_offset is None
+    assert not {c.id for c in page_one.comments} & {c.id for c in page_two.comments}
 
 
 @pytest.mark.asyncio

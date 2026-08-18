@@ -96,8 +96,12 @@ class ArcticShiftClient:
 
     async def get_post_thread(
         self, post_url_or_id: str, max_comments: int = 50, comment_offset: int = 0
-    ) -> RedditThread:
-        """Fetch a specific post and its top comments from Arctic Shift."""
+    ) -> tuple[RedditThread, int | None]:
+        """Fetch a specific post and its top comments from Arctic Shift.
+
+        Returns the thread plus the next offset into the score-sorted, filtered
+        comment list, or None when the archive's list is exhausted.
+        """
         post_id = (
             self._extract_post_id(post_url_or_id)
             if "/" in post_url_or_id
@@ -127,10 +131,11 @@ class ArcticShiftClient:
                     comments.append(mapped)
 
             comments.sort(key=lambda x: x.score, reverse=True)
-            return RedditThread(
-                post=post,
-                comments=comments[comment_offset : comment_offset + max_comments],
+            page = comments[comment_offset : comment_offset + max_comments]
+            next_offset = (
+                comment_offset + len(page) if len(page) == max_comments else None
             )
+            return RedditThread(post=post, comments=page), next_offset
         except Exception as e:
             raise ArcticShiftError(
                 f"Error fetching thread from Arctic Shift: {e}"

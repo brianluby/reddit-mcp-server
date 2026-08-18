@@ -34,6 +34,38 @@ DEGRADED_MESSAGE = (
     "Reddit retrieval failed and the fallback flow could not complete. Try again later."
 )
 ARCHIVE_LAG_MESSAGE = "Served via the Arctic Shift archive; scores may lag live Reddit."
+PROVIDER_SWITCH_MESSAGE = (
+    "The page_token was issued by a data provider that is now unavailable. "
+    "Tokens are provider-specific (a Reddit raw-stream offset is not an Arctic "
+    "Shift list offset), so continuing on the other provider would skip or "
+    "repeat comments. Retry shortly, or restart pagination by calling this "
+    "tool again without page_token."
+)
+_REDDIT_TOKEN_PREFIX = "reddit"
+_ARCTIC_TOKEN_PREFIX = "arctic"
+# Caps the per-request comment window; without it a crafted token could blow
+# up downstream request sizes (Reddit limit / Arctic Shift 3x oversample).
+_MAX_COMMENT_OFFSET = 10_000
+
+
+def _parse_comment_page_token(page_token: str) -> tuple[str, int]:
+    """Parse a provider-prefixed continuation token like 'reddit:30'."""
+    provider, sep, raw_offset = page_token.partition(":")
+    if provider not in (_REDDIT_TOKEN_PREFIX, _ARCTIC_TOKEN_PREFIX) or not sep:
+        raise ValueError(
+            "Invalid page_token; expected a '<provider>:<offset>' token "
+            "(e.g. 'reddit:30') as returned by next_page_token."
+        )
+    try:
+        offset = int(raw_offset)
+    except ValueError as e:
+        raise ValueError("Invalid page_token; the offset must be an integer.") from e
+    if not 0 <= offset <= _MAX_COMMENT_OFFSET:
+        raise ValueError(
+            f"Invalid page_token; the offset must be between 0 and "
+            f"{_MAX_COMMENT_OFFSET}."
+        )
+    return provider, offset
 
 
 class DependencyContainer:
@@ -258,37 +290,32 @@ async def extract_public_opinion(
     This tool extracts PURE human opinions, filtering out noise, bots, and low-effort content.
     Citations: You MUST use the `comment_url` for each specific quote in your final report.
     Pagination: pass `next_page_token` to continue reading deeper comments.
+    Tokens are provider-prefixed (e.g. 'reddit:30') and only the provider that
+    issued one can continue it.
     """
     logger.info(f"extract_public_opinion: url='{post_url}'")
+    token_provider = None
     comment_offset = 0
     if page_token:
-        try:
-            comment_offset = max(0, int(page_token))
-        except ValueError as e:
-            raise ValueError("Invalid page_token; it must be an integer string.") from e
+        token_provider, comment_offset = _parse_comment_page_token(page_token)
     client = DependencyContainer.get_reddit_client()
     data_source = None
     message = None
+    next_offset = None
 
-    # Fetch thread (The client already maps basic data)
-    try:
-        thread = await client.get_post_thread(
-            post_url=post_url, max_comments=max_comments, comment_offset=comment_offset
-        )
-    except RedditClientError as e:
-        logger.warning(
-            f"Reddit API failed or credentials missing ({e}); "
-            "falling back to Arctic Shift for extract_public_opinion."
-        )
+    if token_provider == _ARCTIC_TOKEN_PREFIX:
+        # An Arctic Shift cursor indexes the archive's score-sorted list; it
+        # cannot be replayed against Reddit's raw DFS stream, so continue on
+        # the archive directly.
         arctic_client = DependencyContainer.get_arctic_shift_client()
         try:
-            thread = await arctic_client.get_post_thread(
+            thread, next_offset = await arctic_client.get_post_thread(
                 post_url_or_id=post_url,
                 max_comments=max_comments,
                 comment_offset=comment_offset,
             )
         except ArcticShiftError as e:
-            logger.warning(f"Fallback providers failed for extract_public_opinion: {e}")
+            logger.warning(f"Arctic Shift continuation failed: {e}")
             return PaginatedCommentResponse(
                 meta_context=build_meta_context(),
                 data=[],
@@ -297,6 +324,51 @@ async def extract_public_opinion(
             )
         data_source = "arctic_shift"
         message = ARCHIVE_LAG_MESSAGE
+    else:
+        # Fetch thread (The client already maps basic data)
+        try:
+            thread, next_offset = await client.get_post_thread(
+                post_url=post_url,
+                max_comments=max_comments,
+                comment_offset=comment_offset,
+            )
+        except RedditClientError as e:
+            if token_provider == _REDDIT_TOKEN_PREFIX:
+                # A Reddit raw-stream offset is meaningless to the archive's
+                # index space; refuse rather than skip/repeat comments.
+                logger.warning(
+                    f"Reddit failed mid-pagination ({e}); refusing cross-provider "
+                    "continuation."
+                )
+                return PaginatedCommentResponse(
+                    meta_context=build_meta_context(),
+                    data=[],
+                    status="degraded",
+                    message=PROVIDER_SWITCH_MESSAGE,
+                )
+            logger.warning(
+                f"Reddit API failed or credentials missing ({e}); "
+                "falling back to Arctic Shift for extract_public_opinion."
+            )
+            arctic_client = DependencyContainer.get_arctic_shift_client()
+            try:
+                thread, next_offset = await arctic_client.get_post_thread(
+                    post_url_or_id=post_url,
+                    max_comments=max_comments,
+                    comment_offset=comment_offset,
+                )
+            except ArcticShiftError as e:
+                logger.warning(
+                    f"Fallback providers failed for extract_public_opinion: {e}"
+                )
+                return PaginatedCommentResponse(
+                    meta_context=build_meta_context(),
+                    data=[],
+                    status="degraded",
+                    message=DEGRADED_MESSAGE,
+                )
+            data_source = "arctic_shift"
+            message = ARCHIVE_LAG_MESSAGE
 
     # Application Layer Filtering: Drop low quality before responding
     # This saves tokens and ensures the LLM only sees valuable input.
@@ -311,12 +383,17 @@ async def extract_public_opinion(
         )
     ]
 
-    # A short page means the raw stream is exhausted; a full page likely has more.
+    # The client reports the true next offset for the provider that served the
+    # page (None when its stream/list is exhausted); prefix binds the cursor to
+    # that provider so it can never be replayed on the other index space.
     next_page_token = None
-    if len(thread.comments) >= max_comments and (
-        len(refined_comments) > 0 or len(thread.comments) == max_comments
-    ):
-        next_page_token = str(comment_offset + max_comments)
+    if next_offset is not None:
+        prefix = (
+            _ARCTIC_TOKEN_PREFIX
+            if data_source == "arctic_shift"
+            else _REDDIT_TOKEN_PREFIX
+        )
+        next_page_token = f"{prefix}:{next_offset}"
 
     return PaginatedCommentResponse(
         meta_context=build_meta_context(),

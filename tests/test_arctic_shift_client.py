@@ -97,12 +97,13 @@ async def test_get_post_thread_success(arctic_client, mock_http_client):
 
     mock_http_client.get.side_effect = [post_response, comment_response]
 
-    thread = await arctic_client.get_post_thread("abc")
+    thread, next_offset = await arctic_client.get_post_thread("abc")
 
     assert isinstance(thread, RedditThread)
     assert thread.post.id == "abc"
     assert len(thread.comments) == 1
     assert thread.comments[0].id == "c1"
+    assert next_offset is None  # fewer comments than a full page
 
 
 @pytest.mark.asyncio
@@ -164,13 +165,14 @@ async def test_get_post_thread_oversamples_filters_and_sorts(
 
     mock_http_client.get.side_effect = [post_response, comment_response]
 
-    thread = await arctic_client.get_post_thread("abc", max_comments=2)
+    thread, next_offset = await arctic_client.get_post_thread("abc", max_comments=2)
 
     assert len(thread.comments) == 2
     assert [c.id for c in thread.comments] == ["c2", "c3"]
     assert [c.score for c in thread.comments] == [10, 3]
     assert all("[deleted]" not in c.body for c in thread.comments)
     assert all("[removed]" not in c.body for c in thread.comments)
+    assert next_offset == 2  # full page within the sorted list
 
     comments_call = mock_http_client.get.await_args_list[1]
     assert comments_call.kwargs["params"]["limit"] == 6
@@ -209,12 +211,13 @@ async def test_get_post_thread_comment_offset_slices_sorted_comments(
 
     mock_http_client.get.side_effect = [post_response, comment_response]
 
-    thread = await arctic_client.get_post_thread(
+    thread, next_offset = await arctic_client.get_post_thread(
         "abc", max_comments=2, comment_offset=1
     )
 
     assert [c.id for c in thread.comments] == ["c1", "c2"]
     assert [c.score for c in thread.comments] == [8, 6]
+    assert next_offset == 3
 
     comments_call = mock_http_client.get.await_args_list[1]
     assert comments_call.kwargs["params"]["limit"] == 9

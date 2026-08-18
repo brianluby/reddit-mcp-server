@@ -1,4 +1,13 @@
-from reddit_mcp.application.utils import build_meta_context, is_high_quality_comment
+import asyncio
+import json
+
+import pytest
+
+from reddit_mcp.application.utils import (
+    build_meta_context,
+    is_high_quality_comment,
+    llm_timeout,
+)
 from reddit_mcp.domain.models import MetaContext
 
 LONG_BODY = "This is a sufficiently long comment body that adds real substance."
@@ -12,6 +21,28 @@ def test_build_meta_context_returns_model_instance():
     assert isinstance(ctx, MetaContext)
     assert ctx.current_server_date
     assert "instruction_note" in ctx.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_llm_timeout_dict_fallback_is_json_serializable(monkeypatch):
+    async def mock_wait_for(aw, timeout=None, **kwargs):
+        aw.close()
+        raise TimeoutError()
+
+    monkeypatch.setattr(asyncio, "wait_for", mock_wait_for)
+
+    @llm_timeout(timeout_seconds=1)
+    async def legacy_tool():
+        return "never reached"
+
+    result = await legacy_tool()
+
+    assert isinstance(result, dict)
+    # The raw-dict fallback (no response_model) must survive JSON encoding;
+    # a MetaContext instance under meta_context previously broke json.dumps.
+    decoded = json.loads(json.dumps(result))
+    assert decoded["status"] == "partial_timeout"
+    assert isinstance(decoded["meta_context"]["current_server_date"], str)
 
 
 def test_high_quality_comment_passes():

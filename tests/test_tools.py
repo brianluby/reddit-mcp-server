@@ -100,7 +100,7 @@ async def test_extract_public_opinion_logic(mock_reddit_client, sample_post):
     )
 
     mock_thread = RedditThread(post=sample_post, comments=[good_comment, bad_comment])
-    mock_reddit_client.get_post_thread.return_value = mock_thread
+    mock_reddit_client.get_post_thread.return_value = (mock_thread, None)
 
     result = await tools.extract_public_opinion("http://url")
 
@@ -125,14 +125,17 @@ def _make_quality_comment(cid: str) -> RedditComment:
 async def test_extract_public_opinion_full_page_returns_next_token(
     mock_reddit_client, sample_post
 ):
-    mock_reddit_client.get_post_thread.return_value = RedditThread(
-        post=sample_post,
-        comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
+        ),
+        2,
     )
 
     result = await tools.extract_public_opinion("http://url", max_comments=2)
 
-    assert result.next_page_token == "2"
+    assert result.next_page_token == "reddit:2"
     mock_reddit_client.get_post_thread.assert_awaited_with(
         post_url="http://url", max_comments=2, comment_offset=0
     )
@@ -142,27 +145,50 @@ async def test_extract_public_opinion_full_page_returns_next_token(
 async def test_extract_public_opinion_page_token_advances_offset(
     mock_reddit_client, sample_post
 ):
-    mock_reddit_client.get_post_thread.return_value = RedditThread(
-        post=sample_post,
-        comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
+        ),
+        5,
     )
 
     result = await tools.extract_public_opinion(
-        "http://url", max_comments=2, page_token="3"
+        "http://url", max_comments=2, page_token="reddit:3"
     )
 
-    assert result.next_page_token == "5"
+    assert result.next_page_token == "reddit:5"
     mock_reddit_client.get_post_thread.assert_awaited_with(
         post_url="http://url", max_comments=2, comment_offset=3
     )
 
 
 @pytest.mark.asyncio
+async def test_extract_public_opinion_client_offset_drives_token(
+    mock_reddit_client, sample_post
+):
+    # If the client consumed extra raw entries (e.g. deleted comments), the
+    # token must use the client's offset, not offset + max_comments.
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
+        ),
+        7,
+    )
+
+    result = await tools.extract_public_opinion("http://url", max_comments=2)
+
+    assert result.next_page_token == "reddit:7"
+
+
+@pytest.mark.asyncio
 async def test_extract_public_opinion_short_page_returns_no_token(
     mock_reddit_client, sample_post
 ):
-    mock_reddit_client.get_post_thread.return_value = RedditThread(
-        post=sample_post, comments=[_make_quality_comment("c1")]
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(post=sample_post, comments=[_make_quality_comment("c1")]),
+        None,
     )
 
     result = await tools.extract_public_opinion("http://url", max_comments=2)
@@ -175,10 +201,68 @@ async def test_extract_public_opinion_short_page_returns_no_token(
 async def test_extract_public_opinion_invalid_page_token_raises_value_error(
     mock_reddit_client,
 ):
-    with pytest.raises(ValueError, match="Invalid page_token"):
-        await tools.extract_public_opinion("http://url", page_token="abc")
+    for bad_token in ("abc", "2", "reddit", "reddit:abc", "reddit:-1", "bogus:5"):
+        with pytest.raises(ValueError, match="Invalid page_token"):
+            await tools.extract_public_opinion("http://url", page_token=bad_token)
 
     mock_reddit_client.get_post_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_page_token_offset_is_bounded(
+    mock_reddit_client,
+):
+    with pytest.raises(ValueError, match="between 0 and"):
+        await tools.extract_public_opinion("http://url", page_token="reddit:99999999")
+
+    mock_reddit_client.get_post_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_rejects_cross_provider_continuation(
+    mock_reddit_client, sample_post
+):
+    # Page 1 served by Reddit (token 'reddit:3'); Reddit now failing — the
+    # token must NOT be replayed against Arctic Shift's index space.
+    mock_reddit_client.get_post_thread.side_effect = RedditClientError("HTTP 429")
+
+    mock_arctic = DependencyContainer.get_arctic_shift_client()
+
+    result = await tools.extract_public_opinion("http://url", page_token="reddit:3")
+
+    assert result.status == "degraded"
+    assert "provider-specific" in result.message
+    assert result.data == []
+    assert result.next_page_token is None
+    mock_arctic.get_post_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_arctic_token_continues_on_arctic(
+    mock_reddit_client, sample_post
+):
+    # An arctic-issued token continues on the archive even though Reddit is
+    # healthy: the cursor only has meaning in the archive's index space.
+    mock_arctic = DependencyContainer.get_arctic_shift_client()
+    mock_arctic.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
+        ),
+        6,
+    )
+
+    result = await tools.extract_public_opinion(
+        "http://url", max_comments=2, page_token="arctic:3"
+    )
+
+    assert result.status == "success"
+    assert result.data_source == "arctic_shift"
+    assert result.next_page_token == "arctic:6"
+    mock_reddit_client.get_post_thread.assert_not_awaited()
+    mock_arctic.get_post_thread.assert_awaited_with(
+        post_url_or_id="http://url", max_comments=2, comment_offset=3
+    )
 
 
 @pytest.mark.asyncio
@@ -360,8 +444,9 @@ async def test_fallback_extract_public_opinion_on_client_error(sample_post):
     mock_reddit.get_post_thread.side_effect = RedditClientError("HTTP 401")
 
     mock_arctic = DependencyContainer.get_arctic_shift_client()
-    mock_arctic.get_post_thread.return_value = RedditThread(
-        post=sample_post, comments=[good_comment]
+    mock_arctic.get_post_thread.return_value = (
+        RedditThread(post=sample_post, comments=[good_comment]),
+        None,
     )
 
     result = await tools.extract_public_opinion("http://url")
@@ -436,8 +521,9 @@ async def test_extract_public_opinion_young_thread_keeps_low_score_comments(
         created_at_human="date",
     )
 
-    mock_reddit_client.get_post_thread.return_value = RedditThread(
-        post=young_post, comments=[fresh_comment]
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(post=young_post, comments=[fresh_comment]),
+        None,
     )
 
     result = await tools.extract_public_opinion("http://url")
@@ -460,8 +546,9 @@ async def test_extract_public_opinion_old_thread_filters_low_score_comments(
         created_at_human="date",
     )
 
-    mock_reddit_client.get_post_thread.return_value = RedditThread(
-        post=old_post, comments=[stale_comment]
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(post=old_post, comments=[stale_comment]),
+        None,
     )
 
     result = await tools.extract_public_opinion("http://url")

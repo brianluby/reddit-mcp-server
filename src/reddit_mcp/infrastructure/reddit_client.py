@@ -120,8 +120,14 @@ class RedditClient:
 
     async def get_post_thread(
         self, post_url: str, max_comments: int = 50, comment_offset: int = 0
-    ) -> RedditThread:
-        """Fetch a specific post and its top comments, parsing the comment tree."""
+    ) -> tuple[RedditThread, int | None]:
+        """Fetch a specific post and its top comments, parsing the comment tree.
+
+        Returns the thread plus the next raw-stream offset to request for the
+        following page, or None when the raw comment stream is exhausted. The
+        offset counts every raw t1 entry consumed — including ones that fail
+        mapping — so consecutive pages never skip or repeat comments.
+        """
         if not self.http_client.auth_manager.has_credentials:
             raise RedditAuthRequiredError("OAuth credentials missing.")
 
@@ -176,7 +182,11 @@ class RedditClient:
 
             parse_comments(comment_children)
 
-            return RedditThread(post=post, comments=comments)
+            # A filled page means the raw stream may have more to consume; the
+            # next offset is wherever traversal actually stopped, which can be
+            # past comment_offset + max_comments when raw t1s fail mapping.
+            next_offset = raw_count if len(comments) >= max_comments else None
+            return RedditThread(post=post, comments=comments), next_offset
         except Exception as e:
             raise RedditClientError(f"Error fetching thread: {e}") from e
 

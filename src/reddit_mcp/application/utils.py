@@ -97,7 +97,7 @@ def llm_timeout(
                         ),
                     )
                 return {
-                    "meta_context": build_meta_context(),
+                    "meta_context": build_meta_context().model_dump(),
                     "data": [],
                     "next_page_token": None,
                     "status": "partial_timeout",
