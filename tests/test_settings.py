@@ -77,6 +77,23 @@ def test_explicit_user_agent_wins():
     assert config.reddit_user_agent == "custom-agent"
 
 
+def test_saved_rss_url_defaults_to_none(monkeypatch):
+    monkeypatch.delenv("REDDIT_SAVED_RSS_URL", raising=False)
+    config = AppConfig(_env_file=None)
+
+    assert config.reddit_saved_rss_url is None
+
+
+def test_saved_rss_url_env_override(monkeypatch):
+    monkeypatch.setenv(
+        "REDDIT_SAVED_RSS_URL", "https://old.reddit.com/saved.rss?feed=abc&user=x"
+    )
+
+    config = AppConfig(_env_file=None)
+
+    assert config.reddit_saved_rss_url.endswith("feed=abc&user=x")
+
+
 _PRINT_UA_SCRIPT = (
     "from reddit_mcp.infrastructure.settings import AppConfig; "
     "print(AppConfig(_env_file=None).reddit_user_agent)"

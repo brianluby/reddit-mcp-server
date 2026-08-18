@@ -19,6 +19,10 @@ from reddit_mcp.infrastructure.reddit_client import (
     RedditClient,
     RedditClientError,
 )
+from reddit_mcp.infrastructure.saved_feed_client import (
+    SavedFeedError,
+    SavedFeedNotConfiguredError,
+)
 from reddit_mcp.infrastructure.search.base import SearchProviderError
 from reddit_mcp.infrastructure.search.providers.duckduckgo import RedditSearchResult
 
@@ -55,9 +59,13 @@ def mock_reddit_client():
     mock_search = MagicMock()
     mock_search.search = AsyncMock()
 
+    mock_feed = MagicMock()
+    mock_feed.get_saved_posts = AsyncMock()
+
     DependencyContainer._reddit_client = mock_client
     DependencyContainer._arctic_shift_client = mock_arctic
     DependencyContainer._search_provider = mock_search
+    DependencyContainer._saved_feed_client = mock_feed
 
     yield mock_client
 
@@ -743,3 +751,93 @@ async def test_tool_schema_bounds():
     max_comments_schema = opinion_tool.parameters["properties"]["max_comments"]
     assert max_comments_schema["minimum"] == 1
     assert max_comments_schema["maximum"] == 100
+
+    saved_tool = await mcp.get_tool("get_saved_posts")
+    assert saved_tool is not None
+    saved_limit_schema = saved_tool.parameters["properties"]["limit"]
+    assert saved_limit_schema["minimum"] == 1
+    assert saved_limit_schema["maximum"] == 100
+
+
+def _make_saved_post(pid: str, title: str | None = None) -> RedditPost:
+    return RedditPost(
+        id=pid,
+        title=title if title is not None else f"Saved post title {pid}",
+        subreddit="test",
+        score=0,
+        upvote_ratio=0.0,
+        num_comments=0,
+        url=f"https://reddit.com/r/test/comments/{pid}",
+        age_in_days=3,
+        created_at_human="August 15, 2026",
+        text_preview="Saved preview",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_saved_posts_success_applies_quality_filter_and_provenance():
+    mock_feed = DependencyContainer.get_saved_feed_client()
+    mock_feed.get_saved_posts.return_value = (
+        [_make_saved_post("a"), _make_saved_post("b", title="Hi")],
+        2,
+    )
+    mock_feed.MAX_FEED_ITEMS = 100
+
+    result = await tools.get_saved_posts(time_filter="week")
+
+    assert result.status == "success"
+    assert [p.id for p in result.data] == ["a"]  # short title filtered
+    assert result.data_source == "saved_rss"
+    assert result.next_page_token is None
+    assert "scores and comment counts" in result.message
+    assert "2 saved comment(s)" in result.message
+    assert "instruction_note" in result.meta_context.model_dump()
+    # Full feed window requested so the filter can consider every entry;
+    # the caller's limit applies after filtering.
+    mock_feed.get_saved_posts.assert_awaited_with(
+        time_filter="week", limit=mock_feed.MAX_FEED_ITEMS
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_saved_posts_short_title_does_not_starve_the_limit():
+    # A short-title entry at the top of the feed must not push valid posts
+    # out of the requested page.
+    mock_feed = DependencyContainer.get_saved_feed_client()
+    mock_feed.MAX_FEED_ITEMS = 100
+    mock_feed.get_saved_posts.return_value = (
+        [
+            _make_saved_post("short", title="Hi"),
+            _make_saved_post("v1"),
+            _make_saved_post("v2"),
+        ],
+        0,
+    )
+
+    result = await tools.get_saved_posts(time_filter="week", limit=2)
+
+    assert [p.id for p in result.data] == ["v1", "v2"]
+
+
+@pytest.mark.asyncio
+async def test_get_saved_posts_unconfigured_returns_warning():
+    mock_feed = DependencyContainer.get_saved_feed_client()
+    mock_feed.get_saved_posts.side_effect = SavedFeedNotConfiguredError("no url")
+
+    result = await tools.get_saved_posts()
+
+    assert result.status == "warning"
+    assert result.data == []
+    assert "REDDIT_SAVED_RSS_URL" in result.message
+
+
+@pytest.mark.asyncio
+async def test_get_saved_posts_feed_error_returns_degraded():
+    mock_feed = DependencyContainer.get_saved_feed_client()
+    mock_feed.get_saved_posts.side_effect = SavedFeedError("feed is down")
+
+    result = await tools.get_saved_posts(time_filter="day")
+
+    assert result.status == "degraded"
+    assert result.data == []
+    assert result.message == "feed is down"

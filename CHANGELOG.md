@@ -11,6 +11,17 @@ Polish from the adversarial-review backlog (issues #15–#22).
 
 ### Added
 
+- New `get_saved_posts` tool: fetches the user's own saved Reddit posts for a
+  definable period (`day`/`week`/`month`/`year`/`all`) via their private
+  saved-items RSS feed (`REDDIT_SAVED_RSS_URL` — no OAuth required). Entries
+  are enriched (`age_in_days`, `created_at_human`, HTML-stripped preview),
+  sorted newest-first, quality-filtered like `search_knowledge` (the caller's
+  limit applies after filtering), and returned with `data_source:
+  "saved_rss"` plus a note that feed metrics (scores, comment counts) are
+  unavailable. Saved comments are counted and skipped; the feed URL is
+  validated against Reddit hosts, every redirect hop is host-validated before
+  any request is sent, and the URL/token is never logged. Unconfigured →
+  `warning` with setup instructions; feed failures → `degraded`.
 - `extract_public_opinion` supports pagination for deep threads via
   provider-prefixed `page_token` / `next_page_token` cursors. A `reddit:`
   cursor pairs the raw-stream offset (for request sizing) with the last-served
