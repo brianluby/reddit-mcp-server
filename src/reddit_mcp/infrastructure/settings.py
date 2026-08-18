@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
@@ -8,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _INSTALL_ID_LENGTH = 8
 _HEX_DIGITS = set("0123456789abcdef")
+_ADOPT_TIMEOUT_SECONDS = 1.0
 
 
 @lru_cache(maxsize=1)
@@ -27,10 +29,35 @@ def _is_valid_install_id(value: str) -> bool:
     return len(value) == _INSTALL_ID_LENGTH and set(value) <= _HEX_DIGITS
 
 
+def _adopt_install_id(path: Path) -> str:
+    """Wait out the process that won exclusive creation, then adopt its ID.
+    A corrupt or stuck file is atomically self-healed with our own ID."""
+    deadline = time.monotonic() + _ADOPT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            existing = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            existing = ""
+        if existing:
+            if _is_valid_install_id(existing):
+                return existing
+            break  # non-empty but corrupt; self-heal below
+        time.sleep(0.02)
+    try:
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(_process_install_id(), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return _process_install_id()
+
+
 @lru_cache(maxsize=1)
 def _install_id() -> str:
     """Per-install identifier persisted in the user's state directory so the
-    default User-Agent stays stable across process restarts."""
+    default User-Agent stays stable across process restarts. Creation is
+    exclusive (O_CREAT|O_EXCL) so concurrent first-starts converge on one ID:
+    losers reread and adopt the winner's value."""
     try:
         path = _install_id_path()
     except (OSError, RuntimeError):
@@ -44,9 +71,19 @@ def _install_id() -> str:
         pass
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_process_install_id(), encoding="utf-8")
     except OSError:
-        pass
+        return _process_install_id()
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return _adopt_install_id(path)
+    except OSError:
+        return _process_install_id()
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_process_install_id())
+    except OSError:
+        return _process_install_id()
     return _process_install_id()
 
 

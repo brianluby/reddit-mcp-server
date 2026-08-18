@@ -35,29 +35,41 @@ DEGRADED_MESSAGE = (
 )
 ARCHIVE_LAG_MESSAGE = "Served via the Arctic Shift archive; scores may lag live Reddit."
 PROVIDER_SWITCH_MESSAGE = (
-    "The page_token was issued by a data provider that is now unavailable. "
-    "Tokens are provider-specific (a Reddit raw-stream offset is not an Arctic "
-    "Shift list offset), so continuing on the other provider would skip or "
-    "repeat comments. Retry shortly, or restart pagination by calling this "
-    "tool again without page_token."
+    "The page_token cannot be continued right now: its provider is unavailable, "
+    "or the live thread was re-sorted past the previous page. Tokens are "
+    "provider-specific (a Reddit raw-stream cursor is not an Arctic Shift list "
+    "offset), so continuing on the other provider would skip or repeat "
+    "comments. Retry shortly, or restart pagination by calling this tool again "
+    "without page_token."
 )
 _REDDIT_TOKEN_PREFIX = "reddit"
 _ARCTIC_TOKEN_PREFIX = "arctic"
 # Caps the per-request comment window; without it a crafted token could blow
 # up downstream request sizes (Reddit limit / Arctic Shift 3x oversample).
 _MAX_COMMENT_OFFSET = 10_000
+_DEPTH_CAP_MESSAGE = "Pagination depth limit reached; deeper comments are unavailable."
 
 
-def _parse_comment_page_token(page_token: str) -> tuple[str, int]:
-    """Parse a provider-prefixed continuation token like 'reddit:30'."""
-    provider, sep, raw_offset = page_token.partition(":")
-    if provider not in (_REDDIT_TOKEN_PREFIX, _ARCTIC_TOKEN_PREFIX) or not sep:
+def _parse_comment_page_token(page_token: str) -> tuple[str, int, str | None]:
+    """Parse a provider-prefixed continuation token ('reddit:30:abc' or
+    'arctic:30'), returning (provider, offset, anchor_comment_id)."""
+    parts = page_token.split(":")
+    provider = parts[0]
+    if provider == _REDDIT_TOKEN_PREFIX and len(parts) == 3:
+        anchor = parts[2]
+        if not anchor:
+            raise ValueError(
+                "Invalid page_token; the anchor comment ID must be non-empty."
+            )
+    elif provider == _ARCTIC_TOKEN_PREFIX and len(parts) == 2:
+        anchor = None
+    else:
         raise ValueError(
-            "Invalid page_token; expected a '<provider>:<offset>' token "
-            "(e.g. 'reddit:30') as returned by next_page_token."
+            "Invalid page_token; expected a token as returned by next_page_token "
+            "(e.g. 'reddit:30:abc' or 'arctic:30')."
         )
     try:
-        offset = int(raw_offset)
+        offset = int(parts[1])
     except ValueError as e:
         raise ValueError("Invalid page_token; the offset must be an integer.") from e
     if not 0 <= offset <= _MAX_COMMENT_OFFSET:
@@ -65,7 +77,7 @@ def _parse_comment_page_token(page_token: str) -> tuple[str, int]:
             f"Invalid page_token; the offset must be between 0 and "
             f"{_MAX_COMMENT_OFFSET}."
         )
-    return provider, offset
+    return provider, offset, anchor
 
 
 class DependencyContainer:
@@ -290,18 +302,21 @@ async def extract_public_opinion(
     This tool extracts PURE human opinions, filtering out noise, bots, and low-effort content.
     Citations: You MUST use the `comment_url` for each specific quote in your final report.
     Pagination: pass `next_page_token` to continue reading deeper comments.
-    Tokens are provider-prefixed (e.g. 'reddit:30') and only the provider that
-    issued one can continue it.
+    Tokens are provider-prefixed (e.g. 'reddit:30:abc') and only the provider
+    that issued one can continue it.
     """
     logger.info(f"extract_public_opinion: url='{post_url}'")
     token_provider = None
     comment_offset = 0
+    anchor_id = None
     if page_token:
-        token_provider, comment_offset = _parse_comment_page_token(page_token)
+        token_provider, comment_offset, anchor_id = _parse_comment_page_token(
+            page_token
+        )
     client = DependencyContainer.get_reddit_client()
     data_source = None
     message = None
-    next_offset = None
+    next_cursor = None
 
     if token_provider == _ARCTIC_TOKEN_PREFIX:
         # An Arctic Shift cursor indexes the archive's score-sorted list; it
@@ -309,7 +324,7 @@ async def extract_public_opinion(
         # the archive directly.
         arctic_client = DependencyContainer.get_arctic_shift_client()
         try:
-            thread, next_offset = await arctic_client.get_post_thread(
+            thread, next_cursor = await arctic_client.get_post_thread(
                 post_url_or_id=post_url,
                 max_comments=max_comments,
                 comment_offset=comment_offset,
@@ -327,10 +342,11 @@ async def extract_public_opinion(
     else:
         # Fetch thread (The client already maps basic data)
         try:
-            thread, next_offset = await client.get_post_thread(
+            thread, next_cursor = await client.get_post_thread(
                 post_url=post_url,
                 max_comments=max_comments,
                 comment_offset=comment_offset,
+                after_comment_id=anchor_id,
             )
         except RedditClientError as e:
             if token_provider == _REDDIT_TOKEN_PREFIX:
@@ -352,7 +368,7 @@ async def extract_public_opinion(
             )
             arctic_client = DependencyContainer.get_arctic_shift_client()
             try:
-                thread, next_offset = await arctic_client.get_post_thread(
+                thread, next_cursor = await arctic_client.get_post_thread(
                     post_url_or_id=post_url,
                     max_comments=max_comments,
                     comment_offset=comment_offset,
@@ -383,17 +399,27 @@ async def extract_public_opinion(
         )
     ]
 
-    # The client reports the true next offset for the provider that served the
-    # page (None when its stream/list is exhausted); prefix binds the cursor to
-    # that provider so it can never be replayed on the other index space.
+    # The serving client reports its own continuation cursor (None when its
+    # stream/list is exhausted); the prefix binds the cursor to that provider
+    # so it can never be replayed on the other index space. Emission is capped
+    # at _MAX_COMMENT_OFFSET so every emitted token is parseable on the next
+    # call: a page that would run past the cap omits the token and says so.
     next_page_token = None
-    if next_offset is not None:
-        prefix = (
-            _ARCTIC_TOKEN_PREFIX
-            if data_source == "arctic_shift"
-            else _REDDIT_TOKEN_PREFIX
-        )
-        next_page_token = f"{prefix}:{next_offset}"
+    depth_capped = False
+    if data_source == "arctic_shift":
+        if next_cursor is not None:
+            if next_cursor <= _MAX_COMMENT_OFFSET:
+                next_page_token = f"{_ARCTIC_TOKEN_PREFIX}:{next_cursor}"
+            else:
+                depth_capped = True
+    elif next_cursor is not None:
+        next_raw_offset, next_anchor = next_cursor
+        if next_raw_offset <= _MAX_COMMENT_OFFSET:
+            next_page_token = f"{_REDDIT_TOKEN_PREFIX}:{next_raw_offset}:{next_anchor}"
+        else:
+            depth_capped = True
+    if depth_capped:
+        message = f"{message} {_DEPTH_CAP_MESSAGE}" if message else _DEPTH_CAP_MESSAGE
 
     return PaginatedCommentResponse(
         meta_context=build_meta_context(),

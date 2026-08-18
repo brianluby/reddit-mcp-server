@@ -130,14 +130,14 @@ async def test_extract_public_opinion_full_page_returns_next_token(
             post=sample_post,
             comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
         ),
-        2,
+        (2, "c2"),
     )
 
     result = await tools.extract_public_opinion("http://url", max_comments=2)
 
-    assert result.next_page_token == "reddit:2"
+    assert result.next_page_token == "reddit:2:c2"
     mock_reddit_client.get_post_thread.assert_awaited_with(
-        post_url="http://url", max_comments=2, comment_offset=0
+        post_url="http://url", max_comments=2, comment_offset=0, after_comment_id=None
     )
 
 
@@ -150,16 +150,16 @@ async def test_extract_public_opinion_page_token_advances_offset(
             post=sample_post,
             comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
         ),
-        5,
+        (5, "c5"),
     )
 
     result = await tools.extract_public_opinion(
-        "http://url", max_comments=2, page_token="reddit:3"
+        "http://url", max_comments=2, page_token="reddit:3:c3"
     )
 
-    assert result.next_page_token == "reddit:5"
+    assert result.next_page_token == "reddit:5:c5"
     mock_reddit_client.get_post_thread.assert_awaited_with(
-        post_url="http://url", max_comments=2, comment_offset=3
+        post_url="http://url", max_comments=2, comment_offset=3, after_comment_id="c3"
     )
 
 
@@ -174,12 +174,12 @@ async def test_extract_public_opinion_client_offset_drives_token(
             post=sample_post,
             comments=[_make_quality_comment("c4"), _make_quality_comment("c5")],
         ),
-        7,
+        (7, "c5"),
     )
 
     result = await tools.extract_public_opinion("http://url", max_comments=2)
 
-    assert result.next_page_token == "reddit:7"
+    assert result.next_page_token == "reddit:7:c5"
 
 
 @pytest.mark.asyncio
@@ -201,7 +201,18 @@ async def test_extract_public_opinion_short_page_returns_no_token(
 async def test_extract_public_opinion_invalid_page_token_raises_value_error(
     mock_reddit_client,
 ):
-    for bad_token in ("abc", "2", "reddit", "reddit:abc", "reddit:-1", "bogus:5"):
+    bad_tokens = [
+        "abc",
+        "2",
+        "reddit",
+        "reddit:abc",
+        "reddit:3",  # missing anchor comment ID
+        "reddit:3:",
+        "reddit:3:c3:junk",
+        "reddit:-1:c3",
+        "bogus:5",
+    ]
+    for bad_token in bad_tokens:
         with pytest.raises(ValueError, match="Invalid page_token"):
             await tools.extract_public_opinion("http://url", page_token=bad_token)
 
@@ -213,9 +224,91 @@ async def test_extract_public_opinion_page_token_offset_is_bounded(
     mock_reddit_client,
 ):
     with pytest.raises(ValueError, match="between 0 and"):
-        await tools.extract_public_opinion("http://url", page_token="reddit:99999999")
+        await tools.extract_public_opinion(
+            "http://url", page_token="reddit:99999999:c1"
+        )
 
     mock_reddit_client.get_post_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_offset_cap_omits_token_and_marks_bounded(
+    mock_reddit_client, sample_post
+):
+    # A full page starting at the maximum offset would emit a token beyond
+    # the parseable range; the token must be omitted and the result marked.
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
+        ),
+        (10_100, "c2"),
+    )
+
+    result = await tools.extract_public_opinion(
+        "http://url", max_comments=2, page_token="reddit:10000:c0"
+    )
+
+    assert result.next_page_token is None
+    assert "depth limit" in result.message
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_arctic_offset_cap_marks_bounded(
+    mock_reddit_client, sample_post
+):
+    mock_arctic = DependencyContainer.get_arctic_shift_client()
+    mock_arctic.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
+        ),
+        10_100,
+    )
+
+    result = await tools.extract_public_opinion(
+        "http://url", max_comments=2, page_token="arctic:10000"
+    )
+
+    assert result.next_page_token is None
+    assert "depth limit" in result.message
+
+
+@pytest.mark.asyncio
+async def test_extract_public_opinion_emitted_tokens_stay_parseable_at_cap(
+    mock_reddit_client, sample_post
+):
+    # A cursor landing exactly on the cap is still emitted and must parse on
+    # the next call (round-trip through the tool).
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(
+            post=sample_post,
+            comments=[_make_quality_comment("c1"), _make_quality_comment("c2")],
+        ),
+        (10_000, "c2"),
+    )
+
+    result = await tools.extract_public_opinion(
+        "http://url", max_comments=2, page_token="reddit:9950:c0"
+    )
+    assert result.next_page_token == "reddit:10000:c2"
+
+    mock_reddit_client.get_post_thread.reset_mock()
+    mock_reddit_client.get_post_thread.return_value = (
+        RedditThread(post=sample_post, comments=[_make_quality_comment("c3")]),
+        None,
+    )
+    result = await tools.extract_public_opinion(
+        "http://url", max_comments=2, page_token=result.next_page_token
+    )
+
+    mock_reddit_client.get_post_thread.assert_awaited_with(
+        post_url="http://url",
+        max_comments=2,
+        comment_offset=10_000,
+        after_comment_id="c2",
+    )
+    assert result.next_page_token is None
 
 
 @pytest.mark.asyncio
@@ -228,7 +321,7 @@ async def test_extract_public_opinion_rejects_cross_provider_continuation(
 
     mock_arctic = DependencyContainer.get_arctic_shift_client()
 
-    result = await tools.extract_public_opinion("http://url", page_token="reddit:3")
+    result = await tools.extract_public_opinion("http://url", page_token="reddit:3:c3")
 
     assert result.status == "degraded"
     assert "provider-specific" in result.message

@@ -119,14 +119,24 @@ class RedditClient:
             raise RedditClientError(f"Error fetching subreddit trends: {e}") from e
 
     async def get_post_thread(
-        self, post_url: str, max_comments: int = 50, comment_offset: int = 0
-    ) -> tuple[RedditThread, int | None]:
+        self,
+        post_url: str,
+        max_comments: int = 50,
+        comment_offset: int = 0,
+        after_comment_id: str | None = None,
+    ) -> tuple[RedditThread, tuple[int, str] | None]:
         """Fetch a specific post and its top comments, parsing the comment tree.
 
-        Returns the thread plus the next raw-stream offset to request for the
-        following page, or None when the raw comment stream is exhausted. The
-        offset counts every raw t1 entry consumed — including ones that fail
-        mapping — so consecutive pages never skip or repeat comments.
+        Returns the thread plus the continuation cursor for the next page —
+        the raw-stream offset (for request sizing) and the ID of the last
+        comment served — or None when the raw comment stream is exhausted.
+
+        Continuation anchors to `after_comment_id` (the last-served comment)
+        instead of skipping by count, so a live re-sort between requests can
+        neither duplicate already-served comments nor skip unseen ones after
+        the anchor. If the anchor fell out of the fetched window (heavy
+        re-sort), a RedditClientError is raised rather than silently
+        misaligned pages.
         """
         if not self.http_client.auth_manager.has_credentials:
             raise RedditAuthRequiredError("OAuth credentials missing.")
@@ -151,10 +161,11 @@ class RedditClient:
 
             comments = []
             raw_count = 0
+            anchor_found = after_comment_id is None
             comment_children = data[1].get("data", {}).get("children", [])
 
             def parse_comments(children: list[dict[str, Any]]):
-                nonlocal raw_count
+                nonlocal raw_count, anchor_found
                 for child in children:
                     if len(comments) >= max_comments:
                         return
@@ -163,8 +174,10 @@ class RedditClient:
                     c_data = child.get("data", {})
 
                     if kind == "t1":  # Comment
-                        # Count raw t1s pre-filter so offsets stay stable across pages
-                        if raw_count >= comment_offset:
+                        if not anchor_found and c_data.get("id") == after_comment_id:
+                            # Everything before the anchor was already served.
+                            anchor_found = True
+                        elif anchor_found:
                             mapped = self._map_comment(c_data, post.id, post.subreddit)
                             if mapped:
                                 comments.append(mapped)
@@ -182,11 +195,17 @@ class RedditClient:
 
             parse_comments(comment_children)
 
-            # A filled page means the raw stream may have more to consume; the
-            # next offset is wherever traversal actually stopped, which can be
-            # past comment_offset + max_comments when raw t1s fail mapping.
-            next_offset = raw_count if len(comments) >= max_comments else None
-            return RedditThread(post=post, comments=comments), next_offset
+            if not anchor_found:
+                raise RedditClientError(
+                    f"Continuation anchor {after_comment_id} not found in the "
+                    "fetched comment window; the live thread was re-sorted past "
+                    "the previous page. Restart pagination without a page_token."
+                )
+
+            next_cursor = (
+                (raw_count, comments[-1].id) if len(comments) >= max_comments else None
+            )
+            return RedditThread(post=post, comments=comments), next_cursor
         except Exception as e:
             raise RedditClientError(f"Error fetching thread: {e}") from e
 

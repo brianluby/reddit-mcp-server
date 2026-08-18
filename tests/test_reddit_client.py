@@ -168,15 +168,15 @@ async def test_get_post_thread_comment_offset_paginates_raw_stream(
 
     url = "http://reddit.com/r/test/comments/123"
 
-    thread, next_offset = await reddit_client.get_post_thread(url, max_comments=2)
+    thread, next_cursor = await reddit_client.get_post_thread(url, max_comments=2)
     assert [c.id for c in thread.comments] == ["c1", "c2"]
-    assert next_offset == 2
+    assert next_cursor == (2, "c2")
 
-    thread, next_offset = await reddit_client.get_post_thread(
-        url, max_comments=2, comment_offset=1
+    thread, next_cursor = await reddit_client.get_post_thread(
+        url, max_comments=2, comment_offset=2, after_comment_id="c2"
     )
-    assert [c.id for c in thread.comments] == ["c2", "c3"]
-    assert next_offset == 3
+    assert [c.id for c in thread.comments] == ["c3", "c4"]
+    assert next_cursor == (4, "c4")
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,7 @@ async def test_get_post_thread_offset_counts_unmapped_raw_comments(
     reddit_client, mock_http_client
 ):
     # c1 fails mapping (empty body) but still consumes a raw-stream slot; the
-    # next offset must reflect the raw count so page 2 has no duplicate.
+    # cursor must reflect the raw count so page 2 has no duplicate.
     children = [
         _raw_comment(1, body=None),
         _raw_comment(2),
@@ -198,16 +198,95 @@ async def test_get_post_thread_offset_counts_unmapped_raw_comments(
 
     url = "http://reddit.com/r/test/comments/123"
 
-    page_one, next_offset = await reddit_client.get_post_thread(url, max_comments=2)
+    page_one, next_cursor = await reddit_client.get_post_thread(url, max_comments=2)
     assert [c.id for c in page_one.comments] == ["c2", "c3"]
-    assert next_offset == 3  # c1 was consumed even though it failed mapping
+    assert next_cursor == (3, "c3")  # c1 was consumed even though it failed mapping
 
-    page_two, next_offset = await reddit_client.get_post_thread(
-        url, max_comments=2, comment_offset=next_offset
+    page_two, next_cursor = await reddit_client.get_post_thread(
+        url, max_comments=2, comment_offset=3, after_comment_id="c3"
     )
     assert [c.id for c in page_two.comments] == ["c4"]
-    assert next_offset is None
+    assert next_cursor is None
     assert not {c.id for c in page_one.comments} & {c.id for c in page_two.comments}
+
+
+@pytest.mark.asyncio
+async def test_get_post_thread_anchor_survives_tree_changes(
+    reddit_client, mock_http_client
+):
+    # Live threads re-sort between requests; the cursor anchors to the last
+    # served comment ID so insertions above the continuation point can
+    # neither duplicate served comments nor skip unseen ones after it.
+    url = "http://reddit.com/r/test/comments/123"
+    mock_response = MagicMock()
+    mock_http_client.get.return_value = mock_response
+
+    mock_response.json.return_value = _thread_payload(
+        [_raw_comment(1), _raw_comment(2), _raw_comment(3)]
+    )
+    thread, next_cursor = await reddit_client.get_post_thread(url, max_comments=2)
+    assert [c.id for c in thread.comments] == ["c1", "c2"]
+    assert next_cursor == (2, "c2")
+
+    # A new comment (c0) is inserted above; c4 is appended below.
+    mock_response.json.return_value = _thread_payload(
+        [
+            _raw_comment(0),
+            _raw_comment(1),
+            _raw_comment(2),
+            _raw_comment(3),
+            _raw_comment(4),
+        ]
+    )
+    thread, next_cursor = await reddit_client.get_post_thread(
+        url,
+        max_comments=2,
+        comment_offset=next_cursor[0],
+        after_comment_id=next_cursor[1],
+    )
+    assert [c.id for c in thread.comments] == ["c3", "c4"]
+    assert next_cursor == (5, "c4")
+
+    # Reordering below the anchor (unseen comments swap places) serves the
+    # new order with no duplicates and nothing after the anchor skipped;
+    # insertions above the anchor are ignored, matching Reddit's own
+    # cursor (`after`) semantics for items that re-sort above the cursor.
+    mock_response.json.return_value = _thread_payload(
+        [
+            _raw_comment(0),
+            _raw_comment(1),
+            _raw_comment(2),
+            _raw_comment(3),
+            _raw_comment(4),
+            _raw_comment(6),
+            _raw_comment(5),
+            _raw_comment(7),
+        ]
+    )
+    thread, next_cursor = await reddit_client.get_post_thread(
+        url, max_comments=2, comment_offset=5, after_comment_id="c4"
+    )
+    assert [c.id for c in thread.comments] == ["c6", "c5"]
+    assert next_cursor == (7, "c5")
+
+
+@pytest.mark.asyncio
+async def test_get_post_thread_missing_anchor_raises(reddit_client, mock_http_client):
+    # If heavy re-sorting pushed the anchor out of the fetched window, fail
+    # loudly instead of silently serving a misaligned page.
+    mock_response = MagicMock()
+    mock_response.json.return_value = _thread_payload(
+        [_raw_comment(1), _raw_comment(3)]
+    )
+    mock_http_client.get.return_value = mock_response
+
+    with pytest.raises(RedditClientError, match="anchor"):
+        await reddit_client.get_post_thread(
+            "http://reddit.com/r/test/comments/123",
+            max_comments=2,
+            comment_offset=2,
+            after_comment_id="c2",
+        )
 
 
 @pytest.mark.asyncio

@@ -11,11 +11,15 @@ Polish from the adversarial-review backlog (issues #15–#22).
 
 ### Added
 
-- `extract_public_opinion` supports pagination for deep threads via a
-  provider-prefixed `page_token` / `next_page_token` cursor (`reddit:` is a
-  skip-count over the raw comment stream; `arctic:` is an offset into the
-  score-sorted list). Tokens are bound to the provider that issued them and
-  capped at 10,000 comments deep; short pages return no token.
+- `extract_public_opinion` supports pagination for deep threads via
+  provider-prefixed `page_token` / `next_page_token` cursors. A `reddit:`
+  cursor pairs the raw-stream offset (for request sizing) with the last-served
+  comment ID, so live re-sorts between requests can neither duplicate served
+  comments nor skip unseen ones after the anchor (matching Reddit's own `after`
+  semantics); an `arctic:` cursor is an offset into the score-sorted list.
+  Tokens are bound to the provider that issued them, capped at 10,000 comments
+  deep (a capped page omits the token and says so); short pages return no
+  token.
 
 ### Changed
 
@@ -29,10 +33,11 @@ Polish from the adversarial-review backlog (issues #15–#22).
 - The `explore_reddit_discussions` fallback message now tells the LLM that
   sort and pagination are unavailable in fallback mode.
 - The default `User-Agent` includes a per-install random suffix (persisted in
-  the user's state directory so it survives restarts; process-stable fallback
-  when the directory is unwritable) so zero-config users are no longer a single
-  shared identity to Reddit (set `REDDIT_USER_AGENT` for a stable descriptive
-  value; README updated).
+  the user's state directory — created race-safely via exclusive file
+  creation so concurrent first-starts share one ID — so it survives restarts;
+  process-stable fallback when the directory is unwritable) so zero-config
+  users are no longer a single shared identity to Reddit (set
+  `REDDIT_USER_AGENT` for a stable descriptive value; README updated).
 - Docker runtime stage runs as `nobody` instead of root.
 
 ### Removed

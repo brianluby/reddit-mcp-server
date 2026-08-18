@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import pytest
 
 from reddit_mcp.infrastructure import settings as settings_module
@@ -71,3 +75,36 @@ def test_explicit_user_agent_wins():
     config = AppConfig(reddit_user_agent="custom-agent", _env_file=None)
 
     assert config.reddit_user_agent == "custom-agent"
+
+
+_PRINT_UA_SCRIPT = (
+    "from reddit_mcp.infrastructure.settings import AppConfig; "
+    "print(AppConfig(_env_file=None).reddit_user_agent)"
+)
+
+
+def test_install_id_shared_across_concurrent_processes(tmp_path):
+    # Several processes racing on their first start (shared XDG_STATE_HOME,
+    # no install-id file yet) must converge on a single install ID.
+    env = os.environ.copy()
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+    env.pop("REDDIT_USER_AGENT", None)
+
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _PRINT_UA_SCRIPT],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(8)
+    ]
+    outputs = [proc.communicate() for proc in procs]
+
+    for proc, (_, stderr) in zip(procs, outputs):
+        assert proc.returncode == 0, stderr
+
+    user_agents = {stdout.strip() for stdout, _ in outputs}
+    assert len(user_agents) == 1
+    assert user_agents.pop().startswith("reddit-mcp-server/0.2.0")
