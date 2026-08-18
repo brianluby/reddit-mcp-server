@@ -23,6 +23,7 @@ _POST_ID_RE = re.compile(r"/comments/([a-z0-9]+)")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 _FEED_TOKEN_RE = re.compile(r"feed=[0-9a-f]+")
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 class SavedFeedError(Exception):
@@ -45,9 +46,15 @@ def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        # Python >= 3.11 fromisoformat accepts the trailing 'Z' designator.
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        # A naive timestamp would crash comparisons against the aware cutoff;
+        # Atom timestamps without an offset are best read as UTC.
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _is_comment_link(link: str) -> bool:
@@ -68,6 +75,7 @@ class SavedFeedClient:
 
     MAX_FEED_ITEMS = 100
     FEED_TIMEOUT_SECONDS = 10.0
+    MAX_REDIRECTS = 3
 
     def __init__(self, feed_url: str | None, user_agent: str):
         self.feed_url = feed_url
@@ -76,10 +84,11 @@ class SavedFeedClient:
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
+            # Redirects are followed manually so every hop's host is validated
+            # before the request (and its secret-bearing query) is sent.
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.FEED_TIMEOUT_SECONDS),
                 headers={"User-Agent": self.user_agent},
-                follow_redirects=True,
             )
         return self._client
 
@@ -88,15 +97,51 @@ class SavedFeedClient:
             await self._client.aclose()
             self._client = None
 
+    def _validated_url(self, url: str) -> httpx.URL:
+        """Assert the URL is an https Reddit link before any request to it."""
+        parsed = urlparse(str(url))
+        if parsed.scheme != "https" or (parsed.hostname or "") not in _ALLOWED_HOSTS:
+            raise SavedFeedError(
+                "Saved-items feed redirected to a non-Reddit host; refusing to "
+                "continue (the feed token must never leave reddit.com)."
+            )
+        return httpx.URL(str(url))
+
     def _validate_feed_url(self) -> None:
         if not self.feed_url:
             raise SavedFeedNotConfiguredError("Saved-items feed URL is not configured.")
-        parsed = urlparse(self.feed_url)
-        if parsed.scheme != "https" or (parsed.hostname or "") not in _ALLOWED_HOSTS:
-            # Guards against leaking the feed token to a mistyped host.
-            raise SavedFeedError(
-                "Saved-items feed URL must be an https link on reddit.com."
-            )
+        # Guards against leaking the feed token to a mistyped initial host.
+        self._validated_url(self.feed_url)
+
+    async def _fetch_feed_document(self, client: httpx.AsyncClient) -> str:
+        # Merge (not replace) — the feed URL's own query carries the secret
+        # token; httpx `params=` would discard it.
+        url = httpx.URL(self.feed_url).copy_merge_params(
+            params={"limit": self.MAX_FEED_ITEMS}
+        )
+        for _ in range(self.MAX_REDIRECTS + 1):
+            response = await client.get(url)
+            if response.status_code not in _REDIRECT_STATUSES:
+                response.raise_for_status()
+                return response.text
+            location = response.headers.get("location")
+            if not location:
+                raise SavedFeedError(
+                    "Saved-items feed redirected without a Location header."
+                )
+            target = url.join(location)
+            if "/login" in target.path:
+                # Reddit redirects to /login when the feed token is rejected.
+                raise SavedFeedError(
+                    "Saved-items feed token was rejected (login redirect). "
+                    "Regenerate the feed URL: Reddit preferences -> feed "
+                    "settings, then update REDDIT_SAVED_RSS_URL."
+                )
+            # Validate BEFORE sending anything to the redirect target.
+            url = self._validated_url(target)
+        raise SavedFeedError(
+            f"Saved-items feed exceeded {self.MAX_REDIRECTS} redirects."
+        )
 
     async def get_saved_posts(
         self, time_filter: str = "month", limit: int = 50
@@ -114,21 +159,7 @@ class SavedFeedClient:
 
         client = await self._ensure_client()
         try:
-            # Merge (not replace) — the feed URL's own query carries the
-            # secret token; httpx `params=` would discard it.
-            request_url = httpx.URL(self.feed_url).copy_merge_params(
-                params={"limit": self.MAX_FEED_ITEMS}
-            )
-            response = await client.get(request_url)
-            if "/login" in response.url.path:
-                # Reddit redirects to /login when the feed token is rejected.
-                raise SavedFeedError(
-                    "Saved-items feed token was rejected (login redirect). "
-                    "Regenerate the feed URL: Reddit preferences -> feed "
-                    "settings, then update REDDIT_SAVED_RSS_URL."
-                )
-            response.raise_for_status()
-            root = ET.fromstring(response.text)
+            root = ET.fromstring(await self._fetch_feed_document(client))
         except (httpx.HTTPError, ET.ParseError) as e:
             # Never include the URL (it carries the secret feed token).
             logger.warning(f"Saved-items feed request failed ({type(e).__name__}).")
@@ -136,7 +167,7 @@ class SavedFeedClient:
                 "The saved-items feed could not be read. Try again later."
             ) from e
 
-        posts: list[RedditPost] = []
+        entries: list[tuple[datetime, RedditPost]] = []
         skipped_comments = 0
         for entry in root.findall(f"{_ATOM}entry"):
             link_el = entry.find(f"{_ATOM}link")
@@ -157,21 +188,29 @@ class SavedFeedClient:
 
             category = entry.find(f"{_ATOM}category")
             created_ts = created.timestamp()
-            posts.append(
-                RedditPost(
-                    id=match.group(1),
-                    title=entry.findtext(f"{_ATOM}title") or "(untitled)",
-                    subreddit=category.get("term", "") if category is not None else "",
-                    score=0,
-                    upvote_ratio=0.0,
-                    num_comments=0,
-                    url=link,
-                    age_in_days=calculate_age_in_days(created_ts),
-                    created_at_human=format_timestamp(created_ts),
-                    text_preview=truncate_text(
-                        _strip_html(entry.findtext(f"{_ATOM}content") or ""), 500
+            entries.append(
+                (
+                    created,
+                    RedditPost(
+                        id=match.group(1),
+                        title=entry.findtext(f"{_ATOM}title") or "(untitled)",
+                        subreddit=(
+                            category.get("term", "") if category is not None else ""
+                        ),
+                        score=0,
+                        upvote_ratio=0.0,
+                        num_comments=0,
+                        url=link,
+                        age_in_days=calculate_age_in_days(created_ts),
+                        created_at_human=format_timestamp(created_ts),
+                        text_preview=truncate_text(
+                            _strip_html(entry.findtext(f"{_ATOM}content") or ""), 500
+                        ),
                     ),
                 )
             )
 
-        return posts[:limit], skipped_comments
+        # Atom does not guarantee entry order; enforce the newest-first
+        # contract ourselves before applying the limit.
+        entries.sort(key=lambda pair: pair[0], reverse=True)
+        return [post for _, post in entries[:limit]], skipped_comments

@@ -509,8 +509,10 @@ async def get_saved_posts(
     feed_client = DependencyContainer.get_saved_feed_client()
 
     try:
+        # Full feed window up front so the quality filter below can consider
+        # every in-period entry; the caller's limit is applied after filtering.
         posts, skipped_comments = await feed_client.get_saved_posts(
-            time_filter=time_filter, limit=limit
+            time_filter=time_filter, limit=feed_client.MAX_FEED_ITEMS
         )
     except SavedFeedNotConfiguredError:
         logger.warning("Saved-items feed is not configured.")
@@ -532,8 +534,10 @@ async def get_saved_posts(
             message=str(e),
         )
 
-    # Same quality gate as search_knowledge: drop empty/very short titles.
-    valid_posts = [p for p in posts if len(p.title) > 5]
+    # Same quality gate as search_knowledge: drop empty/very short titles,
+    # THEN honor the caller's limit (filtering after slicing would starve the
+    # page whenever a short-title entry sits near the top of the feed).
+    valid_posts = [p for p in posts if len(p.title) > 5][:limit]
 
     message = (
         "Sourced from the user's private saved-items feed; scores and comment "
