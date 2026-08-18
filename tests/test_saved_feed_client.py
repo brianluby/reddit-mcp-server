@@ -244,8 +244,9 @@ async def test_get_saved_posts_follows_same_host_redirect(client, recent):
             "<p>x</p>",
         )
     )
+    redirect_target = "https://www.reddit.com/user/testuser/saved.rss?feed=cafebabedeadbeef"
     client._client.get.side_effect = [
-        _redirect_response("https://old.reddit.com/saved.rss?feed=cafebabedeadbeef"),
+        _redirect_response(redirect_target),
         feed,
     ]
 
@@ -253,6 +254,9 @@ async def test_get_saved_posts_follows_same_host_redirect(client, recent):
 
     assert [p.id for p in posts] == ["hop1"]
     assert client._client.get.await_count == 2
+    # The second request must go to the validated Location value itself,
+    # not a re-request of the original URL.
+    assert str(client._client.get.await_args_list[1].args[0]) == redirect_target
 
 
 @pytest.mark.asyncio
