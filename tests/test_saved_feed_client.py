@@ -244,7 +244,9 @@ async def test_get_saved_posts_follows_same_host_redirect(client, recent):
             "<p>x</p>",
         )
     )
-    redirect_target = "https://www.reddit.com/user/testuser/saved.rss?feed=cafebabedeadbeef"
+    redirect_target = (
+        "https://www.reddit.com/user/testuser/saved.rss?feed=cafebabedeadbeef"
+    )
     client._client.get.side_effect = [
         _redirect_response(redirect_target),
         feed,
