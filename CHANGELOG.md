@@ -19,7 +19,9 @@ Polish from the adversarial-review backlog (issues #15–#22).
   semantics); an `arctic:` cursor is an offset into the score-sorted list.
   Tokens are bound to the provider that issued them, capped at 10,000 comments
   deep (a capped page omits the token and says so); short pages return no
-  token.
+  token. The Reddit client clamps its request window to the API's 100-item
+  per-request limit, so a continuation deeper than Reddit can serve in one
+  window ends as a clean bounded page instead of an error.
 
 ### Changed
 

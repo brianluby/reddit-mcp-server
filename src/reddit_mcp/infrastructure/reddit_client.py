@@ -28,6 +28,10 @@ class RedditClient:
     Asynchronous client for interacting with the Reddit API using a resilient HTTP client.
     """
 
+    # Reddit's .json listings never return more than 100 items per request,
+    # regardless of the limit parameter.
+    MAX_COMMENT_LIMIT = 100
+
     def __init__(
         self, http_client: ResilientHTTPClient, search_provider: BaseSearchProvider
     ):
@@ -146,8 +150,12 @@ class RedditClient:
             raise RedditClientError("Invalid Reddit post URL provided.")
 
         url = f"https://oauth.reddit.com/comments/{post_id}.json"
-        # Buffer for 'more' items; offset shifts the window into the raw stream
-        params = {"limit": max_comments + 20 + comment_offset}
+        # Buffer for 'more' items; offset shifts the window into the raw stream.
+        # Reddit caps limit at 100 server-side; clamping client-side lets us
+        # tell "window was truncated" apart from a genuine re-sort.
+        requested_limit = max_comments + 20 + comment_offset
+        window_clamped = requested_limit > self.MAX_COMMENT_LIMIT
+        params = {"limit": min(requested_limit, self.MAX_COMMENT_LIMIT)}
 
         try:
             response = await self.http_client.get(url, params=params)
@@ -196,6 +204,11 @@ class RedditClient:
             parse_comments(comment_children)
 
             if not anchor_found:
+                if window_clamped:
+                    # The requested window was truncated by Reddit's per-request
+                    # cap, so the anchor may simply lie beyond what could be
+                    # fetched — a bounded result, not a misalignment error.
+                    return RedditThread(post=post, comments=[]), None
                 raise RedditClientError(
                     f"Continuation anchor {after_comment_id} not found in the "
                     "fetched comment window; the live thread was re-sorted past "

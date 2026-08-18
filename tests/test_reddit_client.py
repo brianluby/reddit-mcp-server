@@ -273,7 +273,8 @@ async def test_get_post_thread_anchor_survives_tree_changes(
 @pytest.mark.asyncio
 async def test_get_post_thread_missing_anchor_raises(reddit_client, mock_http_client):
     # If heavy re-sorting pushed the anchor out of the fetched window, fail
-    # loudly instead of silently serving a misaligned page.
+    # loudly instead of silently serving a misaligned page. (Window is not
+    # clamped here: 2 + 20 + 2 <= 100.)
     mock_response = MagicMock()
     mock_response.json.return_value = _thread_payload(
         [_raw_comment(1), _raw_comment(3)]
@@ -287,6 +288,51 @@ async def test_get_post_thread_missing_anchor_raises(reddit_client, mock_http_cl
             comment_offset=2,
             after_comment_id="c2",
         )
+
+
+@pytest.mark.asyncio
+async def test_get_post_thread_request_limit_is_capped_at_100(
+    reddit_client, mock_http_client
+):
+    # Reddit never returns more than 100 items regardless of limit; the client
+    # must clamp its request so a truncated window is detectable.
+    mock_response = MagicMock()
+    mock_response.json.return_value = _thread_payload([_raw_comment(1)])
+    mock_http_client.get.return_value = mock_response
+
+    url = "http://reddit.com/r/test/comments/123"
+
+    await reddit_client.get_post_thread(url, max_comments=30, comment_offset=200)
+    sent_limit = mock_http_client.get.await_args.kwargs["params"]["limit"]
+    assert sent_limit == 100  # 30 + 20 + 200 would be 250
+
+    await reddit_client.get_post_thread(url, max_comments=30, comment_offset=10)
+    sent_limit = mock_http_client.get.await_args.kwargs["params"]["limit"]
+    assert sent_limit == 60  # unclamped windows keep the exact buffer math
+
+
+@pytest.mark.asyncio
+async def test_get_post_thread_clamped_window_anchor_missing_is_bounded(
+    reddit_client, mock_http_client
+):
+    # Deep continuation: the requested window (30 + 20 + 500) is truncated by
+    # Reddit's 100-item cap, so the anchor can legitimately lie beyond the
+    # fetched window. That is a bounded end-of-results, not a re-sort error.
+    mock_response = MagicMock()
+    mock_response.json.return_value = _thread_payload(
+        [_raw_comment(1), _raw_comment(2)]
+    )
+    mock_http_client.get.return_value = mock_response
+
+    thread, next_cursor = await reddit_client.get_post_thread(
+        "http://reddit.com/r/test/comments/123",
+        max_comments=30,
+        comment_offset=500,
+        after_comment_id="c500",
+    )
+
+    assert thread.comments == []
+    assert next_cursor is None
 
 
 @pytest.mark.asyncio

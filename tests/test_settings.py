@@ -81,6 +81,7 @@ _PRINT_UA_SCRIPT = (
     "from reddit_mcp.infrastructure.settings import AppConfig; "
     "print(AppConfig(_env_file=None).reddit_user_agent)"
 )
+_CHILD_TIMEOUT_SECONDS = 30
 
 
 def test_install_id_shared_across_concurrent_processes(tmp_path):
@@ -100,7 +101,25 @@ def test_install_id_shared_across_concurrent_processes(tmp_path):
         )
         for _ in range(8)
     ]
-    outputs = [proc.communicate() for proc in procs]
+    outputs = [None] * len(procs)
+    timed_out = []
+    for index, proc in enumerate(procs):
+        try:
+            outputs[index] = proc.communicate(timeout=_CHILD_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            timed_out.append(index)
+
+    if timed_out:
+        # Kill and reap stragglers so no zombies/pipes survive the failure.
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+        for proc in procs:
+            proc.wait()
+        pytest.fail(
+            f"child process(es) {timed_out} did not finish within "
+            f"{_CHILD_TIMEOUT_SECONDS}s"
+        )
 
     for proc, (_, stderr) in zip(procs, outputs):
         assert proc.returncode == 0, stderr
