@@ -23,6 +23,11 @@ from reddit_mcp.infrastructure.reddit_client import (
     RedditClient,
     RedditClientError,
 )
+from reddit_mcp.infrastructure.saved_feed_client import (
+    SavedFeedClient,
+    SavedFeedError,
+    SavedFeedNotConfiguredError,
+)
 from reddit_mcp.infrastructure.search.base import SearchProviderError
 from reddit_mcp.infrastructure.search.providers.duckduckgo import (
     DuckDuckGoSearchProvider,
@@ -86,6 +91,7 @@ class DependencyContainer:
     _reddit_client: RedditClient | None = None
     _arctic_shift_client: ArcticShiftClient | None = None
     _search_provider: DuckDuckGoSearchProvider | None = None
+    _saved_feed_client: SavedFeedClient | None = None
 
     @classmethod
     def _init_dependencies(cls):
@@ -105,6 +111,9 @@ class DependencyContainer:
                     http_client=http_client, search_provider=search_provider
                 )
                 arctic_shift_client = ArcticShiftClient(http_client=http_client)
+                saved_feed_client = SavedFeedClient(
+                    feed_url=settings.reddit_saved_rss_url, user_agent=user_agent
+                )
             except Exception:
                 cls.reset()
                 if http_client is not None:
@@ -117,6 +126,7 @@ class DependencyContainer:
             cls._search_provider = search_provider
             cls._reddit_client = reddit_client
             cls._arctic_shift_client = arctic_shift_client
+            cls._saved_feed_client = saved_feed_client
 
     @classmethod
     def get_reddit_client(cls) -> RedditClient:
@@ -134,6 +144,11 @@ class DependencyContainer:
         return cls._search_provider
 
     @classmethod
+    def get_saved_feed_client(cls) -> SavedFeedClient:
+        cls._init_dependencies()
+        return cls._saved_feed_client
+
+    @classmethod
     def is_initialized(cls) -> bool:
         return cls._reddit_client is not None
 
@@ -144,6 +159,7 @@ class DependencyContainer:
         cls._reddit_client = None
         cls._arctic_shift_client = None
         cls._search_provider = None
+        cls._saved_feed_client = None
 
     @classmethod
     async def aclose(cls) -> None:
@@ -152,7 +168,11 @@ class DependencyContainer:
             if cls._reddit_client is not None:
                 await cls._reddit_client.close()
         finally:
-            cls.reset()
+            try:
+                if cls._saved_feed_client is not None:
+                    await cls._saved_feed_client.close()
+            finally:
+                cls.reset()
 
     @classmethod
     def override_reddit_client(cls, client: RedditClient) -> None:
@@ -464,3 +484,68 @@ async def analyze_niche_trends(
                 "unreachable) due to archive lag. Please use search tools instead."
             ),
         )
+
+
+SAVED_FEED_UNCONFIGURED_MESSAGE = (
+    "Saved posts are unavailable: set REDDIT_SAVED_RSS_URL to your private "
+    "saved-items feed. While logged in, open old.reddit.com/saved.rss and copy "
+    "the full URL (it contains a secret feed token — treat it like a password)."
+)
+
+
+@llm_timeout(timeout_seconds=15, response_model=PaginatedPostResponse)
+async def get_saved_posts(
+    time_filter: Literal["day", "week", "month", "year", "all"] = "month",
+    limit: Annotated[int, Field(ge=1, le=100)] = 50,
+) -> PaginatedPostResponse:
+    """
+    PERSONAL TOOL: fetches the USER'S saved Reddit posts from a defined time
+    period (day/week/month/year/all), newest first. Use this to revisit,
+    summarize, or triage content the user explicitly bookmarked.
+    Note: the feed does not expose scores or comment counts; posts with thin
+    titles are filtered out. Pagination is not supported for this tool.
+    """
+    logger.info(f"get_saved_posts: time_filter='{time_filter}'")
+    feed_client = DependencyContainer.get_saved_feed_client()
+
+    try:
+        posts, skipped_comments = await feed_client.get_saved_posts(
+            time_filter=time_filter, limit=limit
+        )
+    except SavedFeedNotConfiguredError:
+        logger.warning("Saved-items feed is not configured.")
+        return PaginatedPostResponse(
+            meta_context=build_meta_context(),
+            data=[],
+            next_page_token=None,
+            status="warning",
+            message=SAVED_FEED_UNCONFIGURED_MESSAGE,
+        )
+    except SavedFeedError as e:
+        logger.warning(f"Saved-items feed failed for get_saved_posts: {e}")
+        return PaginatedPostResponse(
+            meta_context=build_meta_context(),
+            data=[],
+            next_page_token=None,
+            status="degraded",
+            # Client messages are user-facing (and never contain the feed URL).
+            message=str(e),
+        )
+
+    # Same quality gate as search_knowledge: drop empty/very short titles.
+    valid_posts = [p for p in posts if len(p.title) > 5]
+
+    message = (
+        "Sourced from the user's private saved-items feed; scores and comment "
+        "counts are not exposed by the feed."
+    )
+    if skipped_comments:
+        message += f" {skipped_comments} saved comment(s) were skipped (posts only)."
+
+    return PaginatedPostResponse(
+        meta_context=build_meta_context(),
+        data=valid_posts,
+        next_page_token=None,
+        data_source="saved_rss",
+        message=message,
+    )

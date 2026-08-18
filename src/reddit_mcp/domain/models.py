@@ -77,7 +77,9 @@ class PaginatedPostResponse(BaseModel):
         None,
         description=(
             "Provenance of the data: None = official Reddit API, "
-            "'arctic_shift' = community archive (metrics may lag live Reddit)."
+            "'arctic_shift' = community archive (metrics may lag live Reddit), "
+            "'saved_rss' = the user's private saved-items feed "
+            "(scores/comment counts unavailable)."
         ),
     )
 
@@ -101,6 +103,8 @@ class PaginatedCommentResponse(BaseModel):
         None,
         description=(
             "Provenance of the data: None = official Reddit API, "
-            "'arctic_shift' = community archive (metrics may lag live Reddit)."
+            "'arctic_shift' = community archive (metrics may lag live Reddit), "
+            "'saved_rss' = the user's private saved-items feed "
+            "(scores/comment counts unavailable)."
         ),
     )

@@ -110,6 +110,14 @@ class AppConfig(BaseSettings):
         default_factory=_default_user_agent,
         description="User-Agent string for HTTP requests",
     )
+    reddit_saved_rss_url: str | None = Field(
+        default=None,
+        description=(
+            "Private saved-items feed URL "
+            "(https://old.reddit.com/user/<name>/saved.rss?feed=...&user=...). "
+            "The feed token is the credential — treat it like a password."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
