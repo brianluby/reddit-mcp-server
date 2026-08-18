@@ -35,7 +35,7 @@ Polish from the adversarial-review backlog (issues #15–#22).
 - Docker runtime stage runs as `nobody` instead of root; stray `pyrefly`
   pragma removed from `server.py`.
 
-## [0.2.0] - Resilient Fallbacks & Smart Filtering
+## [0.2.0] - 2026-08-17 - Resilient Fallbacks & Smart Filtering
 
 This release hardens the server's two headline promises: **graceful degradation**
 (fallbacks now trigger on *failed* credentials, not just missing ones, and provider
@@ -121,7 +121,7 @@ to 82 tests, and CI now runs locked, reproducible resolution.
   `status: "degraded"`; schema bounds enforced; aggregate deadline cancels
   in-flight retries.
 
-## [0.1.0] - Initial Release: AI-Native Reddit MCP Server
+## [0.1.0] - 2026-08-16 - Initial Release: AI-Native Reddit MCP Server
 
 - Four LLM-oriented tools: `search_knowledge`, `explore_reddit_discussions`,
   `extract_public_opinion`, `analyze_niche_trends`.
